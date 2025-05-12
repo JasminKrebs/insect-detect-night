@@ -50,7 +50,8 @@ def get_ip_address():
 
 
 # Set base path and get hostname + IP address
-BASE_PATH = Path.home() / "insect-detect"
+#BASE_PATH = Path.home() / "insect-detect" # Raspberry Pi
+BASE_PATH = Path(__file__).parent # PC
 HOSTNAME = socket.gethostname()
 IP_ADDRESS = get_ip_address()
 
@@ -68,6 +69,12 @@ async def start_camera(base_path):
     app.state.models = sorted([file.name for file in (base_path / "models").glob("*.blob")])
     app.state.configs = sorted([file.name for file in (base_path / "configs").glob("*.yaml")
                                 if file.name != "config_selector.yaml"])
+
+    # Choose between RGB and mono (default is RGB)
+    app.state.use_mono = getattr(app.state, "use_mono", False)
+
+    # Chose mono exposure mode (default is auto)
+    app.state.mono_exposure_mode = "auto"
 
     # Initialize relevant app.state variables
     app.state.start_recording_after_shutdown = False
@@ -88,22 +95,44 @@ async def start_camera(base_path):
     app.state.lens_pos = 0
     app.state.iso_sens = 0
     app.state.exp_time = 0
+    app.state.ir_intensity = 0.1
+
+    if app.state.use_mono:
+        app.state.mono_exposure_mode = "auto"
+
     app.state.frame_count = 0
     app.state.prev_time = time.monotonic()
 
     # Create OAK camera pipeline and start device in USB2 mode
     pipeline, app.state.sensor_res = create_pipeline(base_path, app.state.config, app.state.config_model,
-                                                     use_webapp_config=True, create_xin=True)
+                                                     use_webapp_config=True, create_xin=True, use_mono=app.state.use_mono)
     app.state.device = dai.Device(pipeline, maxUsbSpeed=dai.UsbSpeed.HIGH)
 
-    # Create output queues to get the synchronized HQ frames and tracker + model output
+    # Always create control input queue and frame output queue
+    #app.state.q_ctrl = app.state.device.getInputQueue(name="control", maxSize=4, blocking=False)
     app.state.q_frame = app.state.device.getOutputQueue(name="frame", maxSize=4, blocking=False)
-    app.state.q_track = app.state.device.getOutputQueue(name="track", maxSize=4, blocking=False)
 
-    # Create input queue to send control commands to OAK camera
-    app.state.q_ctrl = app.state.device.getInputQueue(name="control", maxSize=4, blocking=False)
+    # Control queue initialization
+    app.state.q_ctrl_expected = True
+    # Safe control queue initialization
+    if app.state.q_ctrl_expected:
+        try:
+            app.state.q_ctrl = app.state.device.getInputQueue(name="control", maxSize=4, blocking=False)
+        except RuntimeError:
+            app.state.q_ctrl = None
+            print("Control queue not available!")
+    else:
+        app.state.q_ctrl = None
 
-    ui.notification("OAK camera pipeline started!", type="positive", timeout=2)
+    # Only create tracker queue in RGB mode for now
+    app.state.q_track = None
+    if not app.state.use_mono:
+        app.state.q_track = app.state.device.getOutputQueue(name="track", maxSize=4, blocking=False)
+
+    # Set correct aspect ratio based on actual resolution
+    app.state.aspect_ratio = app.state.sensor_res[0] / app.state.sensor_res[1]
+
+    ui.notification(f"OAK camera pipeline started in {'Mono' if app.state.use_mono else 'RGB'} mode!", type="positive", timeout=2)
 
 
 async def restart_camera():
@@ -318,8 +347,14 @@ def create_video_stream_container():
         (ui.label().classes("font-bold text-xs")
          .bind_text_from(app.state, "fps", lambda fps: f"FPS: {fps}"))
         ui.separator().props("vertical")
-        (ui.label().classes("font-bold text-xs")
-         .bind_text_from(app.state, "lens_pos", lambda pos: f"Lens Position: {pos}"))
+
+        if app.state.use_mono:
+            (ui.label().classes("font-bold text-xs")
+             .bind_text_from(app.state, "ir_intensity", lambda val: f"IR: {val:.2f}"))
+        else:
+            (ui.label().classes("font-bold text-xs")
+             .bind_text_from(app.state, "lens_pos", lambda pos: f"Lens Position: {pos}"))
+            
         ui.separator().props("vertical")
         (ui.label().classes("font-bold text-xs")
          .bind_text_from(app.state, "iso_sens", lambda iso: f"ISO: {iso}"))
@@ -362,6 +397,12 @@ async def on_config_change(e):
 
 def create_control_elements():
     """Create elements for camera, web app and config control."""
+    # Select camera mode (RGB or Mono Left)
+    with ui.row(align_items="center").classes("w-full gap-2 mb-2"):
+        ui.label("Camera Mode:").classes("font-bold")
+        ui.select(["RGB", "Mono Left"], value="Mono Left" if app.state.use_mono else "RGB",
+              on_change=on_camera_mode_change).classes("flex-1")
+    
     # Slider for manual focus control (only visible if focus mode is set to "manual")
     with ui.column().classes("w-full gap-0 mb-0").bind_visibility_from(app.state, "manual_focus_enabled"):
         ui.label("Manual Focus:").classes("font-bold")
@@ -374,6 +415,59 @@ def create_control_elements():
         (ui.range(min=0, max=255, step=1, on_change=preview_focus_range).props("label")
          .bind_value(app.state.config_updates["camera"]["focus"]["lens_position"], "range"))
 
+
+    # Silders for mono manual controls (only visible in mono mode and if control queue is available)
+    if app.state.use_mono:
+        with ui.column().classes("w-full gap-4 mb-2"):
+            # Exposure Mode Dropdown
+            with ui.row().classes("w-full items-center gap-2"):
+                ui.label("Exposure Mode:").classes("font-bold")
+                ui.select(["auto", "manual"], value="auto", on_change=on_mono_exposure_mode_change) \
+                  .bind_value(app.state, "mono_exposure_mode").classes("min-w-[100px]")
+                
+            # Only show sliders in manual mode
+            with ui.column().classes("w-full gap-4").bind_visibility_from(app.state, "mono_exposure_mode", value="manual"):
+            
+                # IR Intensity
+                with ui.column().classes("w-full"):
+                    with ui.row().classes("w-full justify-between items-center"):
+                        ui.label("IR Intensity").classes("font-bold")
+                        ir_val = ui.label(f"{app.state.ir_intensity:.2f}").classes("text-sm")
+
+                    def on_ir_change(e):
+                        ir_val.set_text(f"{e.value:.2f}")
+                        asyncio.create_task(set_ir_intensity(e))
+
+                    app.state.manual_ir_slider = ui.slider(min=0, max=1, step=0.01, value=app.state.ir_intensity, on_change=on_ir_change).classes("w-full")
+                    ui.label("0.0 - 1.0").classes("text-xs text-right text-gray-400")
+
+                # Exposure
+                with ui.column().classes("w-full"):
+                    with ui.row().classes("w-full justify-between items-center"):
+                        ui.label("Exposure (ms)").classes("font-bold")
+                        exp_val = ui.label(str(app.state.exp_time)).classes("text-sm")
+
+                    def on_exp_change(e):
+                        exp_val.set_text(f"{e.value:.1f}")
+                        asyncio.create_task(set_exposure(e))
+
+                    app.state.manual_exp_slider = ui.slider(min=0.1, max=10, step=0.1, value=app.state.exp_time, on_change=on_exp_change).classes("w-full")
+                    ui.label("0.1 - 10.0 ms").classes("text-xs text-right text-gray-400")
+
+                # ISO
+                with ui.column().classes("w-full"):
+                    with ui.row().classes("w-full justify-between items-center"):
+                        ui.label("ISO").classes("font-bold")
+                        iso_val = ui.label(str(app.state.iso_sens)).classes("text-sm")
+                    
+                    def on_iso_change(e):
+                        iso_val.set_text(str(int(e.value)))
+                        asyncio.create_task(set_iso(e))
+                    
+                    app.state.manual_iso_slider = ui.slider(min=100, max=3200, step=100, value=app.state.iso_sens, on_change=on_iso_change).classes("w-full")
+                    ui.label("100 - 3200").classes("text-xs text-right text-gray-400")
+
+    
     # Switches to toggle dark mode and model/tracker overlay
     with ui.row(align_items="center").classes("w-full gap-4"):
         (ui.switch("Dark Mode", value=True).props("color=green").classes("font-bold")
@@ -389,17 +483,94 @@ def create_control_elements():
         (ui.select(app.state.configs, value=app.state.config_active, on_change=on_config_change)
          .classes("flex-1 truncate"))
 
+async def on_camera_mode_change(e):
+    """Switch between RGB and Mono camera modes and restart camera."""
+    app.state.use_mono = (e.value == "Mono Left")
+    ui.notification(f"Switching to {'Mono' if app.state.use_mono else 'RGB'} camera...", type="info", timeout=2)
+    await asyncio.sleep(0.5)
+    await restart_camera()
 
 async def on_focus_mode_change(e):
     """Update relevant focus parameters in config, set continuous focus if selected."""
     app.state.manual_focus_enabled = e.value == "manual"
     app.state.focus_range_enabled = e.value == "range"
-    if e.value == "continuous":
+    if e.value == "continuous" and app.state.q_ctrl:
         af_ctrl = dai.CameraControl().setAutoFocusMode(dai.CameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
         app.state.q_ctrl.send(af_ctrl)
     else:
         app.state.config_updates["camera"]["focus"]["distance"]["enabled"] = False
         app.state.config_updates["camera"]["focus"]["lens_position"]["enabled"] = True
+
+async def on_mono_exposure_mode_change(e):
+    """Switch between auto/manual exposure for mono and apply manual values when selected."""
+    mode = e.value
+    print(f"Switched to mono exposure mode: {mode}")
+
+    if mode == "manual":
+        # Apply current manual values
+        #if app.state.q_ctrl:
+        #    ctrl = dai.CameraControl()
+        #    ctrl.setManualExposure(
+        #        exposureTimeUs=int(app.state.exp_time),
+        #        sensitivityIso=int(app.state.iso_sens)
+        #    )
+        #    app.state.q_ctrl.send(ctrl)
+
+         # Set initial manual values
+
+        # Read current camera values (from auto mode)
+        exp_ms = round(app.state.exp_time, 1)
+        iso = int(app.state.iso_sens)
+
+        # Set slider values
+        app.state.manual_exp_slider.set_value(exp_ms)
+        app.state.manual_iso_slider.set_value(iso)
+
+        # Set camera to manual with current auto values
+        await set_ir_intensity(app.state.ir_intensity)
+        await set_exposure(exp_ms)
+        await set_iso(iso)
+    
+    elif mode == "auto":
+        # Switch back to auto mode
+        if app.state.q_ctrl:
+            ctrl = dai.CameraControl()
+            ctrl.setAutoExposureEnable()
+            app.state.q_ctrl.send(ctrl)
+
+async def set_ir_intensity(e_or_val):
+    """Set IR flood light intensity (0.0-1.0)."""
+    try:
+        value = e_or_val.value if hasattr(e_or_val, 'value') else e_or_val
+        intensity = max(0.0, min(1.0, float(value)))  # Clamp to 0.0–1.0
+        app.state.ir_intensity = intensity  # update the live label
+        app.state.device.setIrFloodLightIntensity(intensity)
+    except Exception as ex:
+        ui.notify(f"IR control failed: {ex}", type="warning")
+    print("IR intensity set:", intensity)
+
+async def set_exposure(e_or_val):
+    """Set manual exposure time in milliseconds (converted to µs for the camera)."""
+    if app.state.q_ctrl:
+        value = e_or_val.value if hasattr(e_or_val, 'value') else e_or_val
+        app.state.exp_time = float(value)  # milliseconds
+        exposure_us = int(app.state.exp_time * 1000)  # convert to µs
+        iso = int(app.state.iso_sens) if app.state.iso_sens else 100
+        ctrl = dai.CameraControl()
+        ctrl.setManualExposure(exposureTimeUs=exposure_us, sensitivityIso=iso)
+        app.state.q_ctrl.send(ctrl)
+    print("Set exposure:", app.state.exp_time, "ms")
+
+async def set_iso(e_or_val):
+    """Set ISO sensitivity."""
+    if app.state.q_ctrl:
+        value = e_or_val.value if hasattr(e_or_val, 'value') else e_or_val
+        app.state.iso_sens = int(value)
+        exposure_us = int(app.state.exp_time * 1000) if app.state.exp_time else 400
+        ctrl = dai.CameraControl()
+        ctrl.setManualExposure(exposureTimeUs=exposure_us, sensitivityIso=app.state.iso_sens)
+        app.state.q_ctrl.send(ctrl)
+    print("Set ISO:", app.state.iso_sens)
 
 
 def create_camera_settings():

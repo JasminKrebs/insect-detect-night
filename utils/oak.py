@@ -67,12 +67,37 @@ def create_get_temp_oak(device):
     return get_temp_oak
 
 
-def create_pipeline(base_path, config, config_model, use_webapp_config=False, create_xin=False):
+def create_pipeline(base_path, config, config_model, use_webapp_config=False, create_xin=False, use_mono=False):
     """Create and configure depthai pipeline for OAK camera."""
     pipeline = dai.Pipeline()
 
     # Get relevant config parameters from either webapp (live stream) or camera (recording) section
     config_section = getattr(config, "webapp" if use_webapp_config else "camera")
+
+    if use_mono:
+        cam_mono_left = pipeline.create(dai.node.MonoCamera)
+        cam_mono_left.setCamera("left")
+        cam_mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+        cam_mono_left.setFps(config_section.fps)
+
+        # MJPEG encoder for mono stream
+        encoder = pipeline.create(dai.node.VideoEncoder)
+        encoder.setDefaultProfilePreset(1, dai.VideoEncoderProperties.Profile.MJPEG)
+        #encoder.setColorFormat(dai.VideoEncoderProperties.ColorFormat.MONO)
+        encoder.setQuality(config_section.jpeg_quality)
+        cam_mono_left.out.link(encoder.input)
+
+        if create_xin:
+            xin_ctrl = pipeline.create(dai.node.XLinkIn)
+            xin_ctrl.setStreamName("control")
+            xin_ctrl.out.link(cam_mono_left.inputControl)
+
+        xout_mono = pipeline.create(dai.node.XLinkOut)
+        xout_mono.setStreamName("frame")
+        encoder.bitstream.link(xout_mono.input)
+
+        return pipeline, (640, 400)
+
     res_hq = (config_section.resolution.width, config_section.resolution.height)      # HQ frames
     res_lq = (config.detection.resolution.width, config.detection.resolution.height)  # model input
 
