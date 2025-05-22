@@ -15,8 +15,8 @@ Functions:
 
 import threading
 from datetime import timedelta
-
 import depthai as dai
+from rpi_ws281x import PixelStrip, Color
 
 # Create dictionary containing centimeter values and corresponding OAK lens positions
 CM_LENS_POSITIONS = {
@@ -204,3 +204,41 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
         xin_ctrl.out.link(cam_rgb.inputControl)
 
     return pipeline, sensor_res
+
+# LED strip configuration
+LED_COUNT = 8
+LED_PIN = 18
+LED_FREQ_HZ = 800000
+LED_DMA = 10
+LED_BRIGHTNESS = 50
+LED_INVERT = False
+LED_CHANNEL = 0
+
+# Global LED strip object
+led = PixelStrip(LED_COUNT, LED_PIN, LED_FREQ_HZ, LED_DMA, LED_INVERT, LED_BRIGHTNESS, LED_CHANNEL)
+led.begin()
+
+def set_led_on(brightness=50):
+    """Turn LEDs on with specified brightness (0-255)."""
+    led.setBrightness(int(brightness))
+    for i in range(led.numPixels()):
+        led.setPixelColor(i, Color(255, 255, 255))
+    led.show()
+
+def set_led_off():
+    """Turn all LEDs off."""
+    for i in range(led.numPixels()):
+        led.setPixelColor(i, Color(0, 0, 0))
+    led.show()
+
+def set_led_detect():
+    """Turn LEDs on for 2 seconds when an insect is detected."""
+    for i in range(led.numPixels()):
+        led.setPixelColor(i, Color(255, 255, 255))
+    led.show()
+
+    time.sleep(2)  # Keep the LEDs on for 2 seconds.
+
+    for i in range(led.numPixels()):
+        led.setPixelColor(i, Color(0,0,0))  # Turn off all LEDs
+    led.show()

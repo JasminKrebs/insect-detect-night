@@ -40,6 +40,7 @@ from nicegui import Client, app, core, ui
 from utils.app import create_duration_inputs, convert_duration, grid_separator, validate_number
 from utils.config import parse_json, parse_yaml, update_config_selector, update_nested_dict
 from utils.oak import convert_bbox_roi, create_pipeline
+from utils.oak import set_led_on, set_led_off
 
 
 def get_ip_address():
@@ -50,7 +51,7 @@ def get_ip_address():
 
 
 # Set base path and get hostname + IP address
-#BASE_PATH = Path.home() / "insect-detect" # Raspberry Pi
+#BASE_PATH = Path.home() / "insect-detect-night" # Raspberry Pi
 BASE_PATH = Path(__file__).parent # PC
 HOSTNAME = socket.gethostname()
 IP_ADDRESS = get_ip_address()
@@ -96,12 +97,16 @@ async def start_camera(base_path):
     app.state.iso_sens = 0
     app.state.exp_time = 0
     app.state.ir_intensity = 0.1
+    app.state.led_on = False
+    app.state.led_brightness = 50
 
     if app.state.use_mono:
         app.state.mono_exposure_mode = "auto"
 
     app.state.frame_count = 0
     app.state.prev_time = time.monotonic()
+
+    app.state.last_led_trigger_time = 0 # needed for LED trigger
 
     # Create OAK camera pipeline and start device in USB2 mode
     pipeline, app.state.sensor_res = create_pipeline(base_path, app.state.config, app.state.config_model,
@@ -238,6 +243,24 @@ async def update_tracker_data():
                 app.state.exposure_region_active = False
 
     app.state.tracker_data = tracklets_data
+
+    # LED trigger
+    if tracklets_data and not app.state.led_on:
+        now = time.time()
+        if now - app.state.last_led_trigger_time > 3:  # debounce to prevent constant flashing
+            app.state.last_led_trigger_time = now
+            app.state.led_on = True
+            set_led_on(app.state.led_brightness)
+            print("LED triggered by detection")
+
+            # Schedule LED to turn off after 2 seconds
+            async def turn_off_after_delay():
+                await asyncio.sleep(2)
+                app.state.led_on = False
+                set_led_off()
+                print("LED turned off after delay")
+
+            asyncio.create_task(turn_off_after_delay())
 
 
 async def update_overlay():
@@ -466,6 +489,33 @@ def create_control_elements():
                     
                     app.state.manual_iso_slider = ui.slider(min=100, max=3200, step=100, value=app.state.iso_sens, on_change=on_iso_change).classes("w-full")
                     ui.label("100 - 3200").classes("text-xs text-right text-gray-400")
+    
+    # LED manual control
+    with ui.column().classes("w-full gap-2 mt-4"):
+        ui.label("LED Control").classes("font-bold")
+
+        def on_led_toggle(e):
+            app.state.led_on = e.value
+            if e.value:
+                set_led_on(app.state.led_brightness)
+            else:
+                set_led_off()
+
+        def on_brightness_change(e):
+            brightness_val.set_text(str(int(e.value)))
+            app.state.led_brightness = int(e.value)
+            if app.state.led_on:
+                set_led_on(app.state.led_brightness)
+
+        ui.switch("LED On/Off", on_change=on_led_toggle).bind_value(app.state, "led_on")
+
+        with ui.column().classes("w-full").bind_visibility_from(app.state, "led_on", value=True):
+            with ui.column().classes("w-full"):
+                with ui.row().classes("w-full justify-between items-center"):
+                    ui.label("Brightness").classes("font-bold")
+                    brightness_val = ui.label(str(app.state.led_brightness)).classes("text-sm")
+
+                ui.slider(min=0, max=255, step=5, value=app.state.led_brightness, on_change=on_brightness_change).classes("w-full")
 
     
     # Switches to toggle dark mode and model/tracker overlay
@@ -571,7 +621,6 @@ async def set_iso(e_or_val):
         ctrl.setManualExposure(exposureTimeUs=exposure_us, sensitivityIso=app.state.iso_sens)
         app.state.q_ctrl.send(ctrl)
     print("Set ISO:", app.state.iso_sens)
-
 
 def create_camera_settings():
     """Create camera settings expansion panel."""
@@ -1246,6 +1295,13 @@ async def disconnect():
 async def cleanup():
     """Disconnect clients and close running OAK device, start recording if requested."""
     await disconnect()
+
+    # Turn off LEDs before anything else is shut down
+    try:
+        set_led_off()
+        print("LEDs turned off on shutdown.")
+    except Exception as e:
+        print(f"Error turning off LEDs: {e}")
 
     if hasattr(app.state, "device") and app.state.device is not None:
         app.state.device.close()
