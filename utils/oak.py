@@ -16,7 +16,6 @@ Functions:
 import threading
 from datetime import timedelta
 import depthai as dai
-from rpi_ws281x import PixelStrip, Color
 
 # Create dictionary containing centimeter values and corresponding OAK lens positions
 CM_LENS_POSITIONS = {
@@ -77,8 +76,24 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
     if use_mono:
         cam_mono_left = pipeline.create(dai.node.MonoCamera)
         cam_mono_left.setCamera("left")
-        cam_mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+        cam_mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
         cam_mono_left.setFps(config_section.fps)
+
+        # Set video size based on configuration
+        res_hq = (config_section.resolution.width, config_section.resolution.height)
+        if res_hq[0] > 1280 or res_hq[1] > 720:
+            # Limit to 720p for mono camera
+            cam_mono_left.setVideoSize(min(res_hq[0], 1280), min(res_hq[1], 720))
+        else:
+            cam_mono_left.setVideoSize(*res_hq)
+    
+        # Set preview size for model input
+        res_lq = (config.detection.resolution.width, config.detection.resolution.height)
+        cam_mono_left.setPreviewSize(*res_lq)
+        
+        # Check aspect ratio and adjust if needed
+        if abs(res_hq[0] / res_hq[1] - 1) > 0.01:  # check if resolution is not ~1:1
+            cam_mono_left.setPreviewKeepAspectRatio(False)  # stretch frames to square for model input
 
         # MJPEG encoder for mono stream
         encoder = pipeline.create(dai.node.VideoEncoder)
@@ -96,7 +111,7 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
         xout_mono.setStreamName("frame")
         encoder.bitstream.link(xout_mono.input)
 
-        return pipeline, (640, 400)
+        return pipeline, (1280, 720)
 
     res_hq = (config_section.resolution.width, config_section.resolution.height)      # HQ frames
     res_lq = (config.detection.resolution.width, config.detection.resolution.height)  # model input
@@ -204,41 +219,3 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
         xin_ctrl.out.link(cam_rgb.inputControl)
 
     return pipeline, sensor_res
-
-# LED strip configuration
-LED_COUNT = 8
-LED_PIN = 18
-LED_FREQ_HZ = 800000
-LED_DMA = 10
-LED_BRIGHTNESS = 50
-LED_INVERT = False
-LED_CHANNEL = 0
-
-# Global LED strip object
-led = PixelStrip(LED_COUNT, LED_PIN, LED_FREQ_HZ, LED_DMA, LED_INVERT, LED_BRIGHTNESS, LED_CHANNEL)
-led.begin()
-
-def set_led_on(brightness=50):
-    """Turn LEDs on with specified brightness (0-255)."""
-    led.setBrightness(int(brightness))
-    for i in range(led.numPixels()):
-        led.setPixelColor(i, Color(255, 255, 255))
-    led.show()
-
-def set_led_off():
-    """Turn all LEDs off."""
-    for i in range(led.numPixels()):
-        led.setPixelColor(i, Color(0, 0, 0))
-    led.show()
-
-def set_led_detect():
-    """Turn LEDs on for 2 seconds when an insect is detected."""
-    for i in range(led.numPixels()):
-        led.setPixelColor(i, Color(255, 255, 255))
-    led.show()
-
-    time.sleep(2)  # Keep the LEDs on for 2 seconds.
-
-    for i in range(led.numPixels()):
-        led.setPixelColor(i, Color(0,0,0))  # Turn off all LEDs
-    led.show()
