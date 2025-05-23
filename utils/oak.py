@@ -76,31 +76,43 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
     if use_mono:
         cam_mono_left = pipeline.create(dai.node.MonoCamera)
         cam_mono_left.setCamera("left")
-        cam_mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
         cam_mono_left.setFps(config_section.fps)
 
         # Set video size based on configuration
         res_hq = (config_section.resolution.width, config_section.resolution.height)
-        if res_hq[0] > 1280 or res_hq[1] > 720:
-            # Limit to 720p for mono camera
-            cam_mono_left.setVideoSize(min(res_hq[0], 1280), min(res_hq[1], 720))
-        else:
-            cam_mono_left.setVideoSize(*res_hq)
-    
-        # Set preview size for model input
-        res_lq = (config.detection.resolution.width, config.detection.resolution.height)
-        cam_mono_left.setPreviewSize(*res_lq)
+
+        # Create ImageManip nodes for HQ frames and model input
+        manip_hq = pipeline.create(dai.node.ImageManip)
+        manip_model = pipeline.create(dai.node.ImageManip)       
         
+        # Configure resolution and scaling
+        if res_hq[0] <= 640 and res_hq[1] <= 400:
+            # Use 400p for lower resolutions
+            cam_mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
+            sensor_res = (640, 400)
+        else:
+            # Use 720p for all other resolutions
+            cam_mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
+            sensor_res = (1280, 720)
+
+        # Configure model input path
+        res_lq = (config.detection.resolution.width, config.detection.resolution.height)
+        manip_model.initialConfig.setResize(*res_lq)
+
         # Check aspect ratio and adjust if needed
-        if abs(res_hq[0] / res_hq[1] - 1) > 0.01:  # check if resolution is not ~1:1
-            cam_mono_left.setPreviewKeepAspectRatio(False)  # stretch frames to square for model input
+        if abs(res_hq[0] / res_hq[1] - 1) > 0.01:   # check if resolution is not ~1:1
+            manip_model.initialConfig.setKeepAspectRatio(False)   # stretch frames to square for model input
+
+        # Link nodes: MonoCamera -> HQ ImageManip -> Encoder
+        #            MonoCamera -> Model ImageManip
+        cam_mono_left.out.link(manip_hq.inputImage)
+        cam_mono_left.out.link(manip_model.inputImage)
 
         # MJPEG encoder for mono stream
         encoder = pipeline.create(dai.node.VideoEncoder)
         encoder.setDefaultProfilePreset(1, dai.VideoEncoderProperties.Profile.MJPEG)
-        #encoder.setColorFormat(dai.VideoEncoderProperties.ColorFormat.MONO)
         encoder.setQuality(config_section.jpeg_quality)
-        cam_mono_left.out.link(encoder.input)
+        manip_hq.out.link(encoder.input)
 
         if create_xin:
             xin_ctrl = pipeline.create(dai.node.XLinkIn)
@@ -111,7 +123,7 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
         xout_mono.setStreamName("frame")
         encoder.bitstream.link(xout_mono.input)
 
-        return pipeline, (1280, 720)
+        return pipeline, sensor_res
 
     res_hq = (config_section.resolution.width, config_section.resolution.height)      # HQ frames
     res_lq = (config.detection.resolution.width, config.detection.resolution.height)  # model input
