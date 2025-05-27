@@ -1,3 +1,6 @@
+import socket
+import struct
+import os
 from rpi_ws281x import PixelStrip, Color
 import time
 
@@ -41,3 +44,30 @@ def set_led_detect(target_brightness, fade_time=1.0):
     for i in range(led.numPixels()):
         led.setPixelColor(i, Color(0, 0, 0))
     led.show()
+
+# UNIX socket path
+SOCKET_PATH = "/tmp/led.sock"
+
+# Remove old socket if exists
+if os.path.exists(SOCKET_PATH):
+    os.remove(SOCKET_PATH)
+
+sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+sock.bind(SOCKET_PATH)
+os.chmod(SOCKET_PATH, 0o666)
+
+print("LED server started, waiting for commands...")
+
+while True:
+    data, _ = sock.recvfrom(1024)
+    try:
+        cmd, value = data.decode().split(":")
+        value = int(value)
+        if cmd == "on":
+            set_led_on(value)
+        elif cmd == "off":
+            set_led_off()
+        elif cmd == "detect":
+            set_led_detect(value)
+    except Exception as e:
+        print("Invalid command:", data, e)

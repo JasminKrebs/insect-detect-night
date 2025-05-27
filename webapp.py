@@ -41,7 +41,7 @@ from nicegui import Client, app, core, ui
 from utils.app import create_duration_inputs, convert_duration, grid_separator, validate_number
 from utils.config import parse_json, parse_yaml, update_config_selector, update_nested_dict
 from utils.oak import convert_bbox_roi, create_pipeline
-from utils.led import set_led_detect, set_led_off, set_led_on
+from utils.led_client import set_led_detect, set_led_off, set_led_on
 
 
 def get_ip_address():
@@ -251,27 +251,7 @@ async def update_tracker_data():
         now = time.time()
         if now - app.state.last_led_trigger_time > 3:  # debounce to prevent constant flashing
             app.state.last_led_trigger_time = now
-            app.state.led_on = True
-            led_thread = threading.Thread(target=set_led_detect, args=(app.state.led_brightness,))
-            led_thread.start()
-            print("LED triggered by detection")
-            
-            app.state.led_on = False  # Reset after effect is done
-
-    # LED trigger
-    if tracklets_data and not app.state.led_on:
-        now = time.time()
-        if now - app.state.last_led_trigger_time > 3:  # debounce to prevent constant flashing
-            app.state.last_led_trigger_time = now
-            app.state.led_event.set()  # Set the event to indicate the LED is on
-
-            def led_thread():
-                app.state.led_on = True  # Set LED state at start of the effect
-                set_led_detect(app.state.led_brightness)
-                app.state.led_on = False  # Reset after the effect
-                app.state.led_event.clear() 
-
-            threading.Thread(target=led_thread).start()
+            set_led_detect(app.state.led_brightness)
             print("LED triggered by detection")
 
 async def update_overlay():
