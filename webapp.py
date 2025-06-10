@@ -40,7 +40,7 @@ from nicegui import Client, app, core, ui
 
 from utils.app import create_duration_inputs, convert_duration, grid_separator, validate_number
 from utils.config import check_config_changes, parse_json, parse_yaml, update_config_selector, update_nested_dict
-from utils.network import get_ip_address, set_up_network
+from utils.network import get_current_connection, get_ip_address, set_up_network
 from utils.oak import convert_bbox_roi, create_pipeline
 from utils.led_client import set_led_detect, set_led_off, set_led_on
 
@@ -72,6 +72,7 @@ async def start_camera(base_path):
     app.state.mono_exposure_mode = "auto"
 
     # Initialize relevant app.state variables
+    app.state.connection = get_current_connection()
     app.state.start_recording_after_shutdown = False
     app.state.exposure_region_active = False
     app.state.show_overlay = False
@@ -505,8 +506,7 @@ def create_control_elements():
 
                 ui.slider(min=0, max=255, step=5, value=app.state.led_brightness, on_change=on_brightness_change).classes("w-full")
 
-    
-    with ui.row(align_items="center").classes("w-full gap-4"):
+    with ui.row(align_items="center").classes("w-full gap-2"):
         # Switches to toggle dark mode and model/tracker overlay
         (ui.switch("Dark", value=True).props("color=green").classes("font-bold")
          .bind_value_to(ui.dark_mode()))
@@ -516,12 +516,13 @@ def create_control_elements():
 
         # WiFi/Hotspot status icons
         ui.separator().props("vertical")
-        if app.state.config.network.mode == "wifi":
-            ui.icon("wifi", color="green").classes("text-2xl")
-            ui.icon("wifi_tethering_off", color="gray").classes("text-2xl")
-        elif app.state.config.network.mode == "hotspot":
-            ui.icon("wifi_off", color="gray").classes("text-2xl")
-            ui.icon("wifi_tethering", color="green").classes("text-2xl")
+        if app.state.connection["mode"] == "wifi":
+            ui.icon("wifi", color="green")
+            ui.icon("wifi_tethering_off", color="gray")
+        elif app.state.connection["mode"] == "hotspot":
+            ui.icon("wifi_off", color="gray")
+            ui.icon("wifi_tethering", color="green")
+        ui.label(f"{app.state.connection['ssid']}").classes("text-xs")
 
     # Config file selector
     with ui.row(align_items="center").classes("w-full gap-2 mt-0"):
@@ -1289,18 +1290,17 @@ async def show_activate_dialog(config_name):
 
 async def save_to_file(config_path):
     """Save configuration to specified file path."""
-    config_template_path = BASE_PATH / "configs" / app.state.config_active
-
-    with open(config_template_path, "r", encoding="utf-8") as file:
-        config_text = file.read()
-
     ruamel_yaml = ruamel.yaml.YAML()
     ruamel_yaml.indent(mapping=2, sequence=4, offset=2)  # indentation for nested structures
     ruamel_yaml.width = 150  # maximum line width before wrapping
     ruamel_yaml.preserve_quotes = True  # preserve all comments
     ruamel_yaml.boolean_representation = ["false", "true"]  # ensure lowercase representation
 
-    config_template = ruamel_yaml.load(config_text)
+    config_template_path = BASE_PATH / "configs" / app.state.config_active
+
+    with open(config_template_path, "r", encoding="utf-8") as file:
+        config_template = ruamel_yaml.load(file)
+
     update_nested_dict(config_template, app.state.config_updates, dict(app.state.config))
 
     with open(config_path, "w", encoding="utf-8") as file:
@@ -1494,7 +1494,7 @@ if __name__ == "__main__":
     ssl_key_path = Path.home() / "ssl_certificates" / "key.pem"
     use_https = https_enabled and ssl_cert_path.exists() and ssl_key_path.exists()
     if https_enabled and not use_https:
-        print("\nHTTPS is enabled but no SSL certificates were found. Using HTTP instead.\n")
+        print("\nHTTPS is enabled but no SSL certificates were found. Using HTTP instead.")
 
     # Set parameters based on HTTPS setting
     protocol = "https" if use_https else "http"
