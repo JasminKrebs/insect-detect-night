@@ -55,12 +55,14 @@ import json
 import logging
 import socket
 import subprocess
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import cv2
 import depthai as dai
 import psutil
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -71,10 +73,12 @@ from utils.log import record_log, save_logs
 from utils.oak import convert_bbox_roi, create_get_temp_oak, create_pipeline
 from utils.post import process_images
 from utils.power import init_power_manager
+from utils.led_client import set_led_burst, set_led_off, set_led_on
 
 # Set camera trap ID (default: hostname) and base path (default: "insect-detect" directory)
 CAM_ID = socket.gethostname()
-BASE_PATH = Path.home() / "insect-detect"
+#BASE_PATH = Path.home() / "insect-detect-night"
+BASE_PATH = Path(__file__).parent # PC and RPi
 
 # Create directory where all data will be stored (images, metadata, logs, configs)
 DATA_PATH = BASE_PATH / "data"
@@ -108,7 +112,15 @@ CAP_INT_TL = config.recording.capture_interval.timelapse
 EXP_REGION = config.detection.exposure_region.enabled
 LABELS = config_model.mappings.labels
 
-# Initialize power manager (Witty Pi 4 L3V7 or PiJuice Zero - None if disabled)
+# Night settings
+IR_INTENSITY = getattr(config.night, 'ir_intensity', None)
+LED_BRIGHTNESS = getattr(config.night, 'led_brightness', None)
+
+# Ensure these are always defined for use in finally block
+rec_stop_disk = False
+rec_stop_temp_oak = False
+rec_stop_charge = False
+
 try:
     get_chargelevel, get_power_info, external_shutdown = init_power_manager(PWR_MGMT_MODEL)
     chargelevel_start = get_chargelevel() if PWR_MGMT else None
@@ -128,6 +140,23 @@ if PWR_MGMT:
     if (chargelevel_start != "USB_C_IN" and chargelevel_start < CHARGE_MIN) or chargelevel_start == "NA":
         logger.warning("Shut down without recording due to low charge level: %s%%", chargelevel_start)
         subprocess.run(["sudo", "shutdown", "-h", "now"], check=True)
+
+# Set up LED on GPIO pin 12
+#led = LED(12)
+#
+## Blink LED fast if USB C battery is not connected/active
+#chargelevel = get_chargelevel()
+#if chargelevel != "USB_C_IN":
+#    led.blink(on_time=0.3, off_time=0.3, background=True)
+#
+#    # Wait until USB C battery is connected/active before starting recording session
+#    while chargelevel != "USB_C_IN":
+#        time.sleep(1)
+#        chargelevel = get_chargelevel()
+#    led.off()
+#
+## Turn on LED to indicate that the recording session is running
+#led.on()
 
 # Set duration of recording session (*60 to convert from min to s)
 if PWR_MGMT:
@@ -158,26 +187,73 @@ config_model_path = save_path / f"{timestamp_dir}_{config.detection.model.config
 json.dump(sanitize_config(config), config_path.open("w", encoding="utf-8"), indent=2)
 json.dump(config_model, config_model_path.open("w", encoding="utf-8"), indent=2)
 
-# Create depthai pipeline and set path to metadata .csv file
-pipeline, sensor_res = create_pipeline(BASE_PATH, config, config_model,
-                                       use_webapp_config=False, create_xin=EXP_REGION)
+# Initialize LED state
+led_on = False
+last_led_trigger_time = 0
+
+# Robust mono mode detection and pipeline creation
+camera_mode = getattr(config.camera, 'mode', None)
+use_mono = camera_mode == "mono"
+pipeline, sensor_res = create_pipeline(BASE_PATH, config, config_model, use_webapp_config=False, create_xin=EXP_REGION, use_mono=use_mono)
 metadata_path = save_path / f"{timestamp_dir}_metadata.csv"
 
 try:
+
     with (open(metadata_path, "a", buffering=1, encoding="utf-8") as metadata_file,
           dai.Device(pipeline, maxUsbSpeed=dai.UsbSpeed.HIGH) as device,  # start device in USB2 mode
           ThreadPoolExecutor(max_workers=3) as executor):
 
-        # Create output queues to get the synchronized HQ frames and tracker + model output
-        q_frame = device.getOutputQueue(name="frame", maxSize=4, blocking=False)
-        q_track = device.getOutputQueue(name="track", maxSize=4, blocking=False)
+        # Set IR intensity and manual exposure/ISO immediately after device/queue init
+        if IR_INTENSITY is not None:
+            try:
+                logger.info(f"[CAMERA INIT] IR_INTENSITY from config: {IR_INTENSITY}")
+                if not (0 <= IR_INTENSITY <= 1200):
+                    logger.warning(f"[CAMERA INIT] IR_INTENSITY {IR_INTENSITY} out of range (0-1200)")
+                time.sleep(0.2)
+                device.setIrFloodLightIntensity(IR_INTENSITY)
+                logger.info(f"[CAMERA INIT] Set IR intensity to {IR_INTENSITY}")
+            except Exception as e:
+                logger.warning(f"[CAMERA INIT] Failed to set IR intensity: {e}")
 
-        # Create input queue to send control commands to OAK camera (if exposure_region is enabled)
-        q_ctrl = device.getInputQueue(name="control", maxSize=4, blocking=False) if EXP_REGION else None
+        # Always robustly get the correct control queue ONCE after device init, then reuse it
+        q_ctrl_rgb = None
+        q_ctrl_mono = None
+        for attempt in range(1, 5):
+            try:
+                q_ctrl_rgb = device.getInputQueue(name="control_rgb", maxSize=4, blocking=False)
+                logger.info(f"[CONTROL QUEUE] Got 'control_rgb' on attempt {attempt}")
+                break
+            except RuntimeError as e:
+                logger.warning(f"[CONTROL QUEUE] 'control_rgb' not available (attempt {attempt}): {e}")
+                time.sleep(0.2)
+        if q_ctrl_rgb is None:
+            logger.error(f"[CONTROL QUEUE] 'control_rgb' not available after 4 attempts!")
+
+        for attempt in range(1, 5):
+            try:
+                q_ctrl_mono = device.getInputQueue(name="control_mono", maxSize=4, blocking=False)
+                logger.info(f"[CONTROL QUEUE] Got 'control_mono' on attempt {attempt}")
+                break
+            except RuntimeError as e:
+                logger.warning(f"[CONTROL QUEUE] 'control_mono' not available (attempt {attempt}): {e}")
+                time.sleep(0.2)
+        if q_ctrl_mono is None:
+            logger.error(f"[CONTROL QUEUE] 'control_mono' not available after 4 attempts!")
+
+        # --- Send manual exposure/ISO immediately after device/queue init ---
+        exposure_mode = getattr(config.camera.exposure, 'mode', None)
+        exp_time = getattr(config.camera.exposure, 'time', None)  # in ms
+        iso = getattr(config.camera.exposure, 'iso', None)
+
+        # Create output queues to get the synchronized HQ frames and tracker + model output
+        q_frame_rgb = device.getOutputQueue(name="frame_rgb", maxSize=4, blocking=False)
+        q_frame_mono = device.getOutputQueue(name="frame_mono", maxSize=4, blocking=False)
+        q_track = device.getOutputQueue(name="track", maxSize=4, blocking=False)
+        q_model_input = device.getOutputQueue(name="model_input", maxSize=4, blocking=False)  
 
         # Write header to metadata .csv file
         metadata_writer = csv.DictWriter(metadata_file, fieldnames=[
-            "cam_ID", "rec_ID", "timestamp", "lens_position", "iso_sensitivity", "exposure_time",
+            "cam_ID", "rec_ID", "timestamp", "lens_position", "iso_sensitivity", "exposure_time", "ir_intensity", "led_brightness",
             "label", "confidence", "track_ID", "track_status", "x_min", "y_min", "x_max", "y_max"
         ])
         metadata_writer.writeheader()
@@ -194,7 +270,7 @@ try:
                               next_run_time=datetime.now() + timedelta(seconds=2))
             scheduler.start()
 
-        # Wait for 2 seconds to let camera adjust auto focus and exposure
+        # Wait for 2 seconds to let camera settings take effect
         time.sleep(2)
 
         # Write info on start of recording session to log file
@@ -208,8 +284,9 @@ try:
         # Initialize variables for start of recording and capture/check events
         rec_start = datetime.now()
         start_time = time.monotonic()
-        last_capture = start_time - CAP_INT_TL  # capture first frame immediately at start
-        next_capture = start_time + CAP_INT_DET
+        last_timelapse_capture = start_time - CAP_INT_TL  # for timelapse
+        last_detection_capture = start_time - CAP_INT_DET  # for detection burst
+        next_detection_capture = start_time + CAP_INT_DET
         last_temp_check = start_time
         last_disk_check = start_time
         last_charge_check = start_time if PWR_MGMT else None
@@ -218,50 +295,125 @@ try:
         exposure_region_active = False
 
         try:
+            detection_burst_active = False
+            detection_burst_end = 0
+            detection_start_time = None
+            led_burst_end_time = 0
             # Run recording session until either:
             while (time.monotonic() < start_time + REC_TIME and  # configured recording duration is reached
                    disk_free > DISK_MIN and                      # free disk space drops below threshold
                    temp_oak < TEMP_OAK_MAX and                   # OAK chip temperature exceeds threshold
                    len(chargelevels) < 3):                       # charge level drops below threshold for three times
 
+                # Restore timing variables at the start of each loop
+                current_time = time.monotonic()
+                triggered_capture = current_time >= next_detection_capture
+                timelapse_due = current_time >= last_timelapse_capture + CAP_INT_TL
+
+                # Reset frame variables at the start of each loop
+                frame_dai = None
+                frame_source = None
+
                 # Initialize tracking variables
                 track_active = False
                 track_id_max = -1
                 track_id_max_bbox = None
+                current_tracklets = [] 
 
-                # Activate HQ frame capture events based on current time and configured intervals
-                current_time = time.monotonic()
-                triggered_capture = current_time >= next_capture
-                timelapse_capture = current_time >= last_capture + CAP_INT_TL
+                # Always process tracker output to update detection state (ONCE)
+                if q_track.has():
+                    tracklets = q_track.get().tracklets
+                    current_tracklets = tracklets  # Store for later metadata writing
 
-                if q_frame.has() and (triggered_capture or timelapse_capture):
+                    for tracklet in tracklets:
+                        tracklet_status = tracklet.status.name
+                        if tracklet_status in {"TRACKED", "NEW"}:
+                            track_active = True
+                            track_id = tracklet.id
+                            bbox = (tracklet.srcImgDetection.xmin, tracklet.srcImgDetection.ymin,
+                                    tracklet.srcImgDetection.xmax, tracklet.srcImgDetection.ymax)
+                            if tracklet_status == "TRACKED" and track_id > track_id_max:
+                                track_id_max = track_id
+                                track_id_max_bbox = bbox
+
+                # Detection burst logic: start burst if detection is active
+                if track_active: 
+                    if detection_start_time is None:
+                        detection_start_time = current_time
+                        detection_burst_active = True
+                        detection_burst_end = current_time + 5
+                        #next_detection_capture = current_time  # Allow immediate capture
+                        next_detection_capture = current_time if current_time >= last_detection_capture + CAP_INT_DET else last_detection_capture + CAP_INT_DET
+                        if not led_on:
+                            set_led_on(LED_BRIGHTNESS)
+                            led_on = True
+                            led_burst_end_time = current_time + 5
+                    elif not detection_burst_active:
+                        detection_burst_active = True
+                        detection_burst_end = current_time + 5
+                        #next_detection_capture = current_time
+                        next_detection_capture = current_time if current_time >= last_detection_capture + CAP_INT_DET else last_detection_capture + CAP_INT_DET
+                        if not led_on:
+                            set_led_on(LED_BRIGHTNESS)
+                            led_on = True
+                            led_burst_end_time = current_time + 5
+                else:
+                    detection_start_time = None
+
+                # Detection burst: save at configured interval (CAP_INT_DET) for 5 seconds
+                if detection_burst_active and current_time < detection_burst_end:
+                    # Allow immediate capture when burst starts or when interval has passed
+                    if q_frame_rgb.has() and (current_time >= next_detection_capture):
+                        frame_source = 'rgb'
+                        frame_dai = q_frame_rgb.get()
+                        last_detection_capture = current_time
+                        next_detection_capture = current_time + CAP_INT_DET
+           
+                # Timelapse: only save at timelapse interval, and only if not in detection burst
+                elif timelapse_due and not detection_burst_active:
+                    if q_frame_mono.has():
+                        frame_dai = q_frame_mono.get()
+                        frame_source = 'mono'
+                        last_timelapse_capture = current_time
+                        logger.info(f"[TIMELAPSE] Captured mono frame at {current_time:.2f}")
+                        
+                        # Save model input frame only during timelapse
+                        if q_model_input.has():
+                            model_frame = q_model_input.get()
+                            model_frame_data = model_frame.getData()  # MJPEG-encoded data (bitstream)
+                            timestamp_model = datetime.now()
+                            timestamp_model_str = timestamp_model.strftime("%Y-%m-%d_%H-%M-%S-%f")
+                            model_filename = f"{timestamp_model_str}_model_input_416x416_19cm"
+                            executor.submit(save_encoded_frame, save_path, model_filename, model_frame_data)
+                    else:
+                        frame_dai = None  # Set to None if no frame is available
+
+                if frame_dai is not None:
                     # Get MJPEG-encoded HQ frame and associated data (synced with tracker output)
                     timestamp = datetime.now()
                     timestamp_iso = timestamp.isoformat()
                     timestamp_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S-%f")
-                    frame_dai = q_frame.get()       # depthai.ImgFrame (type: BITSTREAM)
                     frame_hq = frame_dai.getData()  # frame data (bitstream in numpy array)
                     lens_pos = frame_dai.getLensPosition()
                     iso_sens = frame_dai.getSensitivity()
-                    exp_time = frame_dai.getExposureTime().total_seconds() * 1000  # milliseconds
+                    exp_time = frame_dai.getExposureTime().total_seconds() * 1000 # milliseconds
 
-                    if q_track.has():
-                        # Get tracker output (including passthrough model output)
-                        tracklets = q_track.get().tracklets
-                        for tracklet in tracklets:
+                    # Save frame (burst or timelapse)
+                    if frame_source == 'rgb':
+                        executor.submit(save_encoded_frame, save_path, timestamp_str, frame_hq)
+                    elif frame_source == 'mono':
+                        executor.submit(save_encoded_frame, save_path, f"{timestamp_str}_timelapse", frame_hq)
+
+                    # Save metadata from camera and tracker + model output to .csv file
+                    # Only write metadata if a frame was saved
+                    if current_tracklets: 
+                        for tracklet in current_tracklets:
                             # Check if tracklet is active (not "LOST" or "REMOVED")
                             tracklet_status = tracklet.status.name
                             if tracklet_status in {"TRACKED", "NEW"}:
-                                track_active = True
                                 track_id = tracklet.id
                                 bbox = (tracklet.srcImgDetection.xmin, tracklet.srcImgDetection.ymin,
                                         tracklet.srcImgDetection.xmax, tracklet.srcImgDetection.ymax)
-
-                                if tracklet_status == "TRACKED" and track_id > track_id_max:
-                                    track_id_max = track_id
-                                    track_id_max_bbox = bbox
-
-                                # Save metadata from camera and tracker + model output to .csv file
                                 metadata = {
                                     "cam_ID": CAM_ID,
                                     "rec_ID": rec_id,
@@ -269,6 +421,8 @@ try:
                                     "lens_position": lens_pos,
                                     "iso_sensitivity": iso_sens,
                                     "exposure_time": round(exp_time, 2),
+                                    "ir_intensity": IR_INTENSITY,
+                                    "led_brightness": LED_BRIGHTNESS,
                                     "label": LABELS[tracklet.srcImgDetection.label],
                                     "confidence": round(tracklet.srcImgDetection.confidence, 2),
                                     "track_ID": track_id,
@@ -279,31 +433,50 @@ try:
                                     "y_max": round(bbox[3], 4)
                                 }
                                 metadata_writer.writerow(metadata)
-
+                    
                         if EXP_REGION:
                             if track_id_max_bbox:
                                 # Use model bbox from most recent active tracking ID to set auto exposure region
-                                roi_x, roi_y, roi_w, roi_h = convert_bbox_roi(track_id_max_bbox, sensor_res)
+                                if frame_source == 'mono':
+                                    res = sensor_res["mono"]
+                                    q_ctrl = q_ctrl_mono
+                                else:
+                                    res = sensor_res["rgb"]
+                                    q_ctrl = q_ctrl_rgb
+                                roi_x, roi_y, roi_w, roi_h = convert_bbox_roi(track_id_max_bbox, res)
                                 exp_ctrl = dai.CameraControl().setAutoExposureRegion(roi_x, roi_y, roi_w, roi_h)
-                                q_ctrl.send(exp_ctrl)
+                                if q_ctrl is not None:
+                                    q_ctrl.send(exp_ctrl)
                                 exposure_region_active = True
                             elif exposure_region_active:
                                 # Reset auto exposure region to full frame if there is no active tracking ID
-                                roi_x, roi_y, roi_w, roi_h = 1, 1, sensor_res[0] - 1, sensor_res[1] - 1
+                                if frame_source == 'mono':
+                                    res = sensor_res["mono"]
+                                    q_ctrl = q_ctrl_mono
+                                else:
+                                    res = sensor_res["rgb"]
+                                    q_ctrl = q_ctrl_rgb
+                                roi_x, roi_y, roi_w, roi_h = 1, 1, res[0] - 1, res[1] - 1
                                 exp_ctrl = dai.CameraControl().setAutoExposureRegion(roi_x, roi_y, roi_w, roi_h)
-                                q_ctrl.send(exp_ctrl)
+                                if q_ctrl is not None:
+                                    q_ctrl.send(exp_ctrl)
                                 exposure_region_active = False
 
-                    if track_active or timelapse_capture:
-                        # Save MJPEG-encoded HQ frame to .jpg file in separate thread
-                        executor.submit(save_encoded_frame, save_path, timestamp_str, frame_hq)
-                        last_capture = current_time
-                        next_capture = current_time + CAP_INT_DET
+                # End detection burst and turn off LED after 5 seconds
+                if detection_burst_active and current_time >= detection_burst_end:
+                    detection_burst_active = False
+                    detection_start_time = None
+                    next_detection_capture = current_time + CAP_INT_DET
+                    
+                # Turn off LED when burst ends (same timing as burst end)
+                if led_on and current_time >= led_burst_end_time:
+                    set_led_off()
+                    led_on = False
 
-                        # Update free disk space (MB) at configured interval
-                        if current_time >= last_disk_check + DISK_CHECK:
-                            disk_free = round(psutil.disk_usage("/").free / 1048576)
-                            last_disk_check = current_time
+                # Update free disk space (MB) at configured interval
+                if current_time >= last_disk_check + DISK_CHECK:
+                    disk_free = round(psutil.disk_usage("/").free / 1048576)
+                    last_disk_check = current_time
 
                 # Update OAK chip temperature at configured interval
                 if current_time >= last_temp_check + TEMP_OAK_CHECK:
@@ -343,6 +516,10 @@ try:
         except Exception:
             logger.exception("Error during recording %s", rec_id)
         finally:
+            if led_on:
+                set_led_off()
+                led_on = False
+                
             # Write recording logs to .csv file
             rec_end = datetime.now()
             record_log(save_path, CAM_ID, rec_id, rec_start, rec_end, chargelevel_start, chargelevel)
@@ -398,7 +575,7 @@ except SystemExit:
     logger.warning("Recording %s stopped by external trigger", rec_id)
 except Exception:
     logger.exception("Error during initialization of recording %s", rec_id)
-finally:
+finally:    
     if not external_shutdown.is_set():
         if config.recording.shutdown.enabled:
             # Shut down Raspberry Pi
