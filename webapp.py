@@ -45,33 +45,57 @@ from utils.oak import convert_bbox_roi, create_pipeline
 from utils.led_client import set_led_detect, set_led_off, set_led_on
 
 # Set base path and get hostname + IP address
-#BASE_PATH = Path.home() / "insect-detect-night" # Raspberry Pi
-BASE_PATH = Path(__file__).parent # PC
+BASE_PATH = Path(__file__).parent
 HOSTNAME = socket.gethostname()
 IP_ADDRESS = get_ip_address()
 
+# Initialize power manager
+#get_chargelevel, get_power_info, external_shutdown = init_power_manager("wittypi")
+#
+## Set up LED on GPIO pin 12
+#led = LED(12)
+#
+## Blink LED fast if USB C battery is not connected/active
+#chargelevel = get_chargelevel()
+#if chargelevel != "USB_C_IN":
+#    led.blink(on_time=0.3, off_time=0.3, background=True)
+#
+#    # Wait until USB C battery is connected/active before starting web app
+#    while chargelevel != "USB_C_IN":
+#        time.sleep(1)
+#        chargelevel = get_chargelevel()
+#    led.off()
+#
+## Blink LED slowly to indicate that the web app is running
+#led.blink(on_time=1, off_time=1, background=True)
 
 async def start_camera(base_path):
     """Connect to OAK device and start camera with selected configuration."""
 
-    # Parse active config file and load configuration parameters
-    app.state.config_selector = parse_yaml(base_path / "configs" / "config_selector.yaml")
-    app.state.config_active = app.state.config_selector.config_active
-    app.state.config = parse_yaml(base_path / "configs" / app.state.config_active)
-    app.state.config_updates = copy.deepcopy(dict(app.state.config))
-    app.state.model_active = app.state.config.detection.model.weights
-    app.state.config_model = parse_json(base_path / "models" / app.state.config.detection.model.config)
-    app.state.models = sorted([file.name for file in (base_path / "models").glob("*.blob")])
-    app.state.configs = sorted([file.name for file in (base_path / "configs").glob("*.yaml")
+    # Only parse config files if this is the initial startup (config not already loaded) - this will help update the UI when switching configs
+    if not hasattr(app.state, 'config') or app.state.config is None:
+        # Parse active config file and load configuration parameters
+        app.state.config_selector = parse_yaml(base_path / "configs" / "config_selector.yaml")
+        app.state.config_active = app.state.config_selector.config_active
+        app.state.config = parse_yaml(base_path / "configs" / app.state.config_active)
+        app.state.config_updates = copy.deepcopy(dict(app.state.config))
+        app.state.model_active = app.state.config.detection.model.weights
+        app.state.config_model = parse_json(base_path / "models" / app.state.config.detection.model.config)
+        app.state.models = sorted([file.name for file in (base_path / "models").glob("*.blob")])
+        app.state.configs = sorted([file.name for file in (base_path / "configs").glob("*.yaml")
                                 if file.name != "config_selector.yaml"])
-
-    # Choose between RGB and mono (default is RGB)
-    app.state.use_mono = getattr(app.state, "use_mono", False)
-
-    # Chose mono exposure mode (default is auto)
-    app.state.mono_exposure_mode = "auto"
+        
+    # Ensure night section exists in config_updates
+    if "night" not in app.state.config_updates:
+        app.state.config_updates["night"] = {}
+    if "ir_intensity" not in app.state.config_updates["night"]:
+        app.state.config_updates["night"]["ir_intensity"] = 0.1
+    if "led_brightness" not in app.state.config_updates["night"]:
+        app.state.config_updates["night"]["led_brightness"] = 50
 
     # Initialize relevant app.state variables
+    app.state.use_mono = app.state.config_updates["camera"]["mode"] == "mono"
+    app.state.mono_exposure_mode = app.state.config.camera.exposure.mode
     app.state.connection = get_current_connection()
     app.state.start_recording_after_shutdown = False
     app.state.exposure_region_active = False
@@ -92,53 +116,41 @@ async def start_camera(base_path):
     app.state.lens_pos = 0
     app.state.iso_sens = 0
     app.state.exp_time = 0
-    app.state.ir_intensity = 0.1
+    app.state.ir_intensity = app.state.config.night.ir_intensity
     app.state.led_on = False
-    app.state.led_brightness = 50
-
-    if app.state.use_mono:
-        app.state.mono_exposure_mode = "auto"
-
+    app.state.led_brightness = app.state.config.night.led_brightness
     app.state.frame_count = 0
     app.state.prev_time = time.monotonic()
-
-    app.state.last_led_trigger_time = 0 # needed for LED trigger
-    app.state.led_event = threading.Event()  # Thread-safe event for LED state
+    app.state.last_led_trigger_time = 0 
+    app.state.led_event = threading.Event() 
 
     # Create OAK camera pipeline and start device in USB2 mode
     pipeline, app.state.sensor_res = create_pipeline(base_path, app.state.config, app.state.config_model,
                                                      use_webapp_config=True, create_xin=True, use_mono=app.state.use_mono)
     app.state.device = dai.Device(pipeline, maxUsbSpeed=dai.UsbSpeed.HIGH)
 
-    # Always create control input queue and frame output queue
-    #app.state.q_ctrl = app.state.device.getInputQueue(name="control", maxSize=4, blocking=False)
-    app.state.q_frame = app.state.device.getOutputQueue(name="frame", maxSize=4, blocking=False)
-
-    # Control queue initialization
-    app.state.q_ctrl_expected = True
-    # Safe control queue initialization
-    if app.state.q_ctrl_expected:
-        try:
-            app.state.q_ctrl = app.state.device.getInputQueue(name="control", maxSize=4, blocking=False)
-        except RuntimeError:
-            app.state.q_ctrl = None
-            print("Control queue not available!")
-    else:
+    # Create control input queue and frame output queue
+    ctrl_queue_name = "control_mono" if app.state.use_mono else "control_rgb"
+    try:
+        app.state.q_ctrl = app.state.device.getInputQueue(name=ctrl_queue_name, maxSize=4, blocking=False)
+    except RuntimeError:
         app.state.q_ctrl = None
+        print(f"Control queue '{ctrl_queue_name}' not available!")
+    
+    stream_name = "frame_mono" if app.state.use_mono else "frame_rgb"
+    app.state.q_frame = app.state.device.getOutputQueue(name=stream_name, maxSize=4, blocking=False)
 
-    # Only create tracker queue in RGB mode for now
-    app.state.q_track = None
-    if not app.state.use_mono:
-        app.state.q_track = app.state.device.getOutputQueue(name="track", maxSize=4, blocking=False)
+    # Create tracker queue
+    app.state.q_track = app.state.device.getOutputQueue(name="track", maxSize=4, blocking=False)
 
-    # Set correct aspect ratio based on actual resolution
-    app.state.aspect_ratio = app.state.sensor_res[0] / app.state.sensor_res[1]
+    # After device and queues are ready, apply manual camera settings if needed
+    await apply_manual_camera_settings_if_needed()
 
     ui.notification(f"OAK camera pipeline started in {'Mono' if app.state.use_mono else 'RGB'} mode!", type="positive", timeout=2)
 
 
 async def restart_camera():
-    """Disconnect from OAK device and reload web app."""
+    """Disconnect from OAK device and restart camera pipeline in-place (no full page reload)."""
     if hasattr(app.state, "frame_timer") and app.state.frame_timer is not None:
         app.state.frame_timer.deactivate()
         app.state.frame_timer = None
@@ -151,8 +163,28 @@ async def restart_camera():
         app.state.device = None
 
     await asyncio.sleep(0.5)
-    ui.navigate.reload()
+    await start_camera(BASE_PATH)
+    await setup_video_stream()
+    app.state.frame_timer = ui.timer(round(1 / app.state.config.webapp.fps, 3), update_frame_and_overlay)
 
+# After camera restart, if mono/manual, re-apply manual settings to camera
+async def apply_manual_camera_settings_if_needed():
+    try:
+        # Only for mono mode and manual exposure
+        if app.state.use_mono and app.state.config.camera.exposure.mode == "manual":
+            exp_time = getattr(app.state.config.camera.exposure, "time", app.state.exp_time)
+            iso = getattr(app.state.config.camera.exposure, "iso", app.state.iso_sens)
+            ir = getattr(app.state.config.night, "ir_intensity", app.state.ir_intensity)
+            # Set state values so UI and camera are in sync
+            app.state.exp_time = float(exp_time)
+            app.state.iso_sens = int(iso)
+            app.state.ir_intensity = float(ir)
+            # Actually set camera
+            await set_ir_intensity(ir)
+            await set_exposure(exp_time)
+            await set_iso(iso)
+    except Exception as ex:
+        print(f"[webapp] Failed to re-apply manual camera settings: {ex}")
 
 async def setup_video_stream():
     """Set up serving of frames and updating of associated camera parameters."""
@@ -165,26 +197,32 @@ async def setup_video_stream():
     @app.get("/video/frame")
     async def serve_frame():
         """Serve MJPEG-encoded frame from OAK camera over HTTP and update camera parameters."""
-        if hasattr(app.state, "q_frame") and app.state.q_frame and app.state.q_frame.has():
-            # Get MJPEG-encoded HQ frame and associated data (synced with tracker output)
-            frame_dai = app.state.q_frame.get()          # depthai.ImgFrame (type: BITSTREAM)
-            frame_bytes = frame_dai.getData().tobytes()  # convert bitstream (numpy array) to bytes
-
-            # Update camera parameters twice per second
-            app.state.frame_count += 1
-            current_time = time.monotonic()
-            elapsed_time = current_time - app.state.prev_time
-            if elapsed_time > 0.5:
-                app.state.fps = round(app.state.frame_count / elapsed_time, 2)
-                app.state.lens_pos = frame_dai.getLensPosition()
-                app.state.iso_sens = frame_dai.getSensitivity()
-                app.state.exp_time = frame_dai.getExposureTime().total_seconds() * 1000  # milliseconds
-                app.state.frame_count = 0
-                app.state.prev_time = current_time
-
-            return Response(content=frame_bytes, media_type="image/jpeg")
-        else:
-            return Response(content=placeholder_bytes, media_type="image/png")
+        # Select the correct output queue based on the current mode
+        stream_name = "frame_mono" if app.state.use_mono else "frame_rgb"
+        if hasattr(app.state, "device") and app.state.device is not None:
+            try:
+                q_frame = app.state.device.getOutputQueue(name=stream_name, maxSize=4, blocking=False)
+            except RuntimeError:
+                return Response(content=placeholder_bytes, media_type="image/png")
+            if q_frame is not None and q_frame.has():
+                try:
+                    frame_dai = q_frame.get()                   # depthai.ImgFrame (type: BITSTREAM)
+                    frame_bytes = frame_dai.getData().tobytes() # convert bitstream (numpy array) to bytes
+                    # Update camera parameters twice per second
+                    app.state.frame_count += 1
+                    current_time = time.monotonic()
+                    elapsed_time = current_time - app.state.prev_time
+                    if elapsed_time > 0.5:
+                        app.state.fps = round(app.state.frame_count / elapsed_time, 2)
+                        app.state.lens_pos = frame_dai.getLensPosition()
+                        app.state.iso_sens = frame_dai.getSensitivity()
+                        app.state.exp_time = frame_dai.getExposureTime().total_seconds() * 1000  # milliseconds
+                        app.state.frame_count = 0
+                        app.state.prev_time = current_time
+                    return Response(content=frame_bytes, media_type="image/jpeg")
+                except Exception:
+                    return Response(content=placeholder_bytes, media_type="image/png")
+        return Response(content=placeholder_bytes, media_type="image/png")
 
 
 async def update_frame():
@@ -194,6 +232,9 @@ async def update_frame():
 
 async def update_tracker_data():
     """Update data from object tracker and detection model, set exposure region if enabled."""
+    if not app.state.show_overlay:
+        app.state.tracker_data = []
+        return
     tracklets_data = []
     track_id_max = -1
     track_id_max_bbox = None
@@ -228,13 +269,17 @@ async def update_tracker_data():
         if app.state.config_updates["detection"]["exposure_region"]["enabled"]:
             if track_id_max_bbox:
                 # Use model bbox from most recent active tracking ID to set auto exposure region
-                roi_x, roi_y, roi_w, roi_h = convert_bbox_roi(track_id_max_bbox, app.state.sensor_res)
+                roi_x, roi_y, roi_w, roi_h = convert_bbox_roi(track_id_max_bbox, app.state.sensor_res["mono"] if app.state.use_mono else app.state.sensor_res["rgb"])
                 exp_ctrl = dai.CameraControl().setAutoExposureRegion(roi_x, roi_y, roi_w, roi_h)
                 app.state.q_ctrl.send(exp_ctrl)
                 app.state.exposure_region_active = True
             elif app.state.exposure_region_active:
                 # Reset auto exposure region to full frame if there is no active tracking ID
-                roi_x, roi_y, roi_w, roi_h = 1, 1, app.state.sensor_res[0] - 1, app.state.sensor_res[1] - 1
+                roi_x, roi_y, roi_w, roi_h = 1, 1, (
+                    app.state.sensor_res["mono"][0] - 1 if app.state.use_mono else app.state.sensor_res["rgb"][0] - 1
+                ), (
+                    app.state.sensor_res["mono"][1] - 1 if app.state.use_mono else app.state.sensor_res["rgb"][1] - 1
+                )
                 exp_ctrl = dai.CameraControl().setAutoExposureRegion(roi_x, roi_y, roi_w, roi_h)
                 app.state.q_ctrl.send(exp_ctrl)
                 app.state.exposure_region_active = False
@@ -244,7 +289,7 @@ async def update_tracker_data():
     # LED trigger
     if tracklets_data and not app.state.led_on:
         now = time.time()
-        if now - app.state.last_led_trigger_time > 3:  # debounce to prevent constant flashing
+        if now - app.state.last_led_trigger_time > 3:
             app.state.last_led_trigger_time = now
             set_led_detect(app.state.led_brightness)
             print("LED triggered by detection")
@@ -428,6 +473,17 @@ async def on_config_change(e):
     has_network_changes = check_config_changes(app.state.config.network,
                                                config_selected.network)
 
+    # Update app state with the new config before applying changes
+    app.state.config = config_selected
+    app.state.config_updates = copy.deepcopy(dict(config_selected))
+    app.state.config_active = config_selected_name
+
+    app.state.use_mono = app.state.config_updates["camera"]["mode"] == "mono"
+    app.state.mono_exposure_mode = app.state.config.camera.exposure.mode
+
+    # Refresh the entire UI to reflect all configuration changes
+    create_ui_components.refresh()
+    
     await apply_config_changes(config_selected_name, has_network_changes, config_selected)
 
 
@@ -436,8 +492,10 @@ def create_control_elements():
     # Select camera mode (RGB or Mono Left)
     with ui.row(align_items="center").classes("w-full gap-2 mb-2"):
         ui.label("Camera Mode:").classes("font-bold")
-        ui.select(["RGB", "Mono Left"], value="Mono Left" if app.state.use_mono else "RGB",
-              on_change=on_camera_mode_change).classes("flex-1")
+        (ui.select(["RGB", "Mono Left"], on_change=on_camera_mode_change).classes("flex-1")
+         .bind_value(app.state.config_updates["camera"], "mode", 
+         forward=lambda v: "mono" if v == "Mono Left" else "rgb",
+         backward=lambda v: "Mono Left" if v == "mono" else "RGB"))
     
     # Slider for manual focus control (only visible if focus mode is set to "manual")
     with ui.column().classes("w-full gap-0 mb-0").bind_visibility_from(app.state, "manual_focus_enabled"):
@@ -452,56 +510,58 @@ def create_control_elements():
          .bind_value(app.state.config_updates["camera"]["focus"]["lens_position"], "range"))
 
 
-    # Silders for mono manual controls (only visible in mono mode and if control queue is available)
-    if app.state.use_mono:
-        with ui.column().classes("w-full gap-4 mb-2"):
-            # Exposure Mode Dropdown
-            with ui.row().classes("w-full items-center gap-2"):
-                ui.label("Exposure Mode:").classes("font-bold")
-                ui.select(["auto", "manual"], value="auto", on_change=on_mono_exposure_mode_change) \
-                  .bind_value(app.state, "mono_exposure_mode").classes("min-w-[100px]")
+    # Sliders for mono manual controls (always created, only visible in mono mode)
+    with ui.column().classes("w-full gap-4 mb-2").bind_visibility_from(app.state, "use_mono", value=True):
+        # Exposure Mode Dropdown
+        with ui.row().classes("w-full items-center gap-2"):
+            ui.label("Exposure Mode:").classes("font-bold")
+            (ui.select(["auto", "manual"], value="auto", on_change=on_mono_exposure_mode_change)
+             .bind_value(app.state.config_updates["camera"]["exposure"], "mode").classes("min-w-[100px]"))
+
+        # Only show sliders in manual mode
+        with ui.column().classes("w-full gap-4").bind_visibility_from(app.state.config_updates["camera"]["exposure"], "mode", value="manual"):
+
+            # IR Intensity
+            with ui.column().classes("w-full"):
+                with ui.row().classes("w-full justify-between items-center"):
+                    ui.label("IR Intensity").classes("font-bold")
+                    ir_val = ui.label(f"{app.state.ir_intensity:.2f}").classes("text-sm")
+
+                def on_ir_change(e):
+                    ir_val.set_text(f"{e.value:.2f}")
+                    app.state.config_updates["night"]["ir_intensity"] = e.value
+                    asyncio.create_task(set_ir_intensity(e))
+
+                app.state.manual_ir_slider = ui.slider(min=0, max=1, step=0.01, value=app.state.ir_intensity, on_change=on_ir_change).classes("w-full")
+                ui.label("0.0 - 1.0").classes("text-xs text-right text-gray-400")
+
+            # Exposure
+            with ui.column().classes("w-full"):
+                with ui.row().classes("w-full justify-between items-center"):
+                    ui.label("Exposure (ms)").classes("font-bold")
+                    exp_val = ui.label(str(app.state.exp_time)).classes("text-sm")
+
+                def on_exp_change(e):
+                    exp_val.set_text(f"{e.value:.1f}")
+                    app.state.config_updates["camera"]["exposure"]["time"] = e.value
+                    asyncio.create_task(set_exposure(e))
+
+                app.state.manual_exp_slider = ui.slider(min=0.1, max=10, step=0.1, value=app.state.exp_time, on_change=on_exp_change).classes("w-full")
+                ui.label("0.1 - 10.0 ms").classes("text-xs text-right text-gray-400")
+
+            # ISO
+            with ui.column().classes("w-full"):
+                with ui.row().classes("w-full justify-between items-center"):
+                    ui.label("ISO").classes("font-bold")
+                    iso_val = ui.label(str(app.state.iso_sens)).classes("text-sm")
                 
-            # Only show sliders in manual mode
-            with ui.column().classes("w-full gap-4").bind_visibility_from(app.state, "mono_exposure_mode", value="manual"):
-            
-                # IR Intensity
-                with ui.column().classes("w-full"):
-                    with ui.row().classes("w-full justify-between items-center"):
-                        ui.label("IR Intensity").classes("font-bold")
-                        ir_val = ui.label(f"{app.state.ir_intensity:.2f}").classes("text-sm")
-
-                    def on_ir_change(e):
-                        ir_val.set_text(f"{e.value:.2f}")
-                        asyncio.create_task(set_ir_intensity(e))
-
-                    app.state.manual_ir_slider = ui.slider(min=0, max=1, step=0.01, value=app.state.ir_intensity, on_change=on_ir_change).classes("w-full")
-                    ui.label("0.0 - 1.0").classes("text-xs text-right text-gray-400")
-
-                # Exposure
-                with ui.column().classes("w-full"):
-                    with ui.row().classes("w-full justify-between items-center"):
-                        ui.label("Exposure (ms)").classes("font-bold")
-                        exp_val = ui.label(str(app.state.exp_time)).classes("text-sm")
-
-                    def on_exp_change(e):
-                        exp_val.set_text(f"{e.value:.1f}")
-                        asyncio.create_task(set_exposure(e))
-
-                    app.state.manual_exp_slider = ui.slider(min=0.1, max=10, step=0.1, value=app.state.exp_time, on_change=on_exp_change).classes("w-full")
-                    ui.label("0.1 - 10.0 ms").classes("text-xs text-right text-gray-400")
-
-                # ISO
-                with ui.column().classes("w-full"):
-                    with ui.row().classes("w-full justify-between items-center"):
-                        ui.label("ISO").classes("font-bold")
-                        iso_val = ui.label(str(app.state.iso_sens)).classes("text-sm")
-                    
-                    def on_iso_change(e):
-                        iso_val.set_text(str(int(e.value)))
-                        asyncio.create_task(set_iso(e))
-                    
-                    app.state.manual_iso_slider = ui.slider(min=100, max=3200, step=100, value=app.state.iso_sens, on_change=on_iso_change).classes("w-full")
-                    ui.label("100 - 3200").classes("text-xs text-right text-gray-400")
+                def on_iso_change(e):
+                    iso_val.set_text(str(int(e.value)))
+                    app.state.config_updates["camera"]["exposure"]["iso"] = int(e.value)
+                    asyncio.create_task(set_iso(e))
+                
+                app.state.manual_iso_slider = ui.slider(min=100, max=3200, step=20, value=app.state.iso_sens, on_change=on_iso_change).classes("w-full")
+                ui.label("100 - 3200").classes("text-xs text-right text-gray-400")
     
     # LED manual control
     with ui.column().classes("w-full gap-2 mt-4"):
@@ -517,6 +577,7 @@ def create_control_elements():
         def on_brightness_change(e):
             brightness_val.set_text(str(int(e.value)))
             app.state.led_brightness = int(e.value)
+            app.state.config_updates["night"]["led_brightness"] = int(e.value)  # Save to config
             if app.state.led_on:
                 set_led_on(app.state.led_brightness)
 
@@ -528,7 +589,10 @@ def create_control_elements():
                     ui.label("Brightness").classes("font-bold")
                     brightness_val = ui.label(str(app.state.led_brightness)).classes("text-sm")
 
-                ui.slider(min=0, max=255, step=5, value=app.state.led_brightness, on_change=on_brightness_change).classes("w-full")
+                (ui.slider(min=0, max=255, step=5, value=app.state.led_brightness, on_change=on_brightness_change).classes("w-full")
+                    #.bind_value(app.state.config_updates["night"], "led_brightness"))
+                    .bind_value(app.state.config_updates["night"], "led_brightness",
+                                forward=lambda v: int(v) if v is not None else None))
 
     with ui.row(align_items="center").classes("w-full gap-2"):
         # Switches to toggle dark mode and model/tracker overlay
@@ -557,8 +621,11 @@ def create_control_elements():
 
 async def on_camera_mode_change(e):
     """Switch between RGB and Mono camera modes and restart camera."""
+    # Always update config and in-memory state, then save config immediately
+    app.state.config_updates["camera"]["mode"] = "mono" if e.value == "Mono Left" else "rgb"
     app.state.use_mono = (e.value == "Mono Left")
     ui.notification(f"Switching to {'Mono' if app.state.use_mono else 'RGB'} camera...", type="info", timeout=2)
+    await save_config(silent=True, suppress_apply_dialog=True) # both True to ensure config is saved and applied
     await asyncio.sleep(0.5)
     await restart_camera()
 
@@ -656,10 +723,11 @@ def create_deployment_section():
 
 
 async def on_focus_mode_change(e):
-    """Update relevant focus parameters in config, set continuous focus if selected."""
+    """Update relevant focus parameters and set continuous focus if selected."""
     app.state.manual_focus_enabled = e.value == "manual"
     app.state.focus_range_enabled = e.value == "range"
-    if e.value == "continuous" and app.state.q_ctrl:
+    
+    if e.value == "continuous":
         af_ctrl = dai.CameraControl().setAutoFocusMode(dai.CameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
         app.state.q_ctrl.send(af_ctrl)
     else:
@@ -671,37 +739,38 @@ async def on_focus_mode_change(e):
 async def on_focus_type_change(e):
     """Update focus distance visibility when focus type changes."""
     app.state.focus_distance_enabled = e.value == "distance"
+    app.state.config_updates["camera"]["focus"]["type"] = e.value  # Save type to config
+    
     if e.value == "distance":
         ui.notification("Focus control slider will still use lens position for finer adjustment!",
                         type="warning", timeout=3)
+
 
 async def on_mono_exposure_mode_change(e):
     """Switch between auto/manual exposure for mono and apply manual values when selected."""
     mode = e.value
     print(f"Switched to mono exposure mode: {mode}")
 
+    # Update config_updates with the mode change
+    app.state.config_updates["camera"]["exposure"]["mode"] = mode
+
     if mode == "manual":
-        # Apply current manual values
-        #if app.state.q_ctrl:
-        #    ctrl = dai.CameraControl()
-        #    ctrl.setManualExposure(
-        #        exposureTimeUs=int(app.state.exp_time),
-        #        sensitivityIso=int(app.state.iso_sens)
-        #    )
-        #    app.state.q_ctrl.send(ctrl)
-
-         # Set initial manual values
-
         # Read current camera values (from auto mode)
         exp_ms = round(app.state.exp_time, 1)
         iso = int(app.state.iso_sens)
+        ir_intensity = app.state.ir_intensity
+
+        # Update config_updates with current values
+        app.state.config_updates["camera"]["exposure"]["time"] = exp_ms
+        app.state.config_updates["camera"]["exposure"]["iso"] = iso
+        app.state.config_updates["night"]["ir_intensity"] = ir_intensity
 
         # Set slider values
         app.state.manual_exp_slider.set_value(exp_ms)
         app.state.manual_iso_slider.set_value(iso)
 
         # Set camera to manual with current auto values
-        await set_ir_intensity(app.state.ir_intensity)
+        await set_ir_intensity(ir_intensity)
         await set_exposure(exp_ms)
         await set_iso(iso)
     
@@ -711,6 +780,7 @@ async def on_mono_exposure_mode_change(e):
             ctrl = dai.CameraControl()
             ctrl.setAutoExposureEnable()
             app.state.q_ctrl.send(ctrl)
+
 
 async def set_ir_intensity(e_or_val):
     """Set IR flood light intensity (0.0-1.0)."""
@@ -722,6 +792,7 @@ async def set_ir_intensity(e_or_val):
     except Exception as ex:
         ui.notify(f"IR control failed: {ex}", type="warning")
     print("IR intensity set:", intensity)
+
 
 async def set_exposure(e_or_val):
     """Set manual exposure time in milliseconds (converted to µs for the camera)."""
@@ -735,6 +806,7 @@ async def set_exposure(e_or_val):
         app.state.q_ctrl.send(ctrl)
     print("Set exposure:", app.state.exp_time, "ms")
 
+
 async def set_iso(e_or_val):
     """Set ISO sensitivity."""
     if app.state.q_ctrl:
@@ -745,6 +817,7 @@ async def set_iso(e_or_val):
         ctrl.setManualExposure(exposureTimeUs=exposure_us, sensitivityIso=app.state.iso_sens)
         app.state.q_ctrl.send(ctrl)
     print("Set ISO:", app.state.iso_sens)
+
 
 def create_camera_settings():
     """Create camera settings expansion panel."""
@@ -815,7 +888,7 @@ def create_camera_settings():
             grid_separator()
             (ui.label("JPEG Quality").classes("font-bold")
              .tooltip("JPEG quality of captured images"))
-            (ui.number(label="JPEG", placeholder=app.state.config.camera.jpeg_quality,
+            (ui.number(label="JPEG Quality", placeholder=app.state.config.camera.jpeg_quality,
                        min=10, max=100, precision=0, step=1,
                        validation={"Required value between 10-100": lambda v: validate_number(v, 10, 100)})
              .bind_value(app.state.config_updates["camera"], "jpeg_quality",
@@ -848,7 +921,11 @@ def create_camera_settings():
 async def on_exposure_region_change(e):
     """Reset auto exposure region to full frame if setting is disabled."""
     if not e.value and app.state.exposure_region_active:
-        roi_x, roi_y, roi_w, roi_h = 1, 1, app.state.sensor_res[0] - 1, app.state.sensor_res[1] - 1
+        roi_x, roi_y, roi_w, roi_h = 1, 1, (
+            app.state.sensor_res["mono"][0] - 1 if app.state.use_mono else app.state.sensor_res["rgb"][0] - 1
+        ), (
+            app.state.sensor_res["mono"][1] - 1 if app.state.use_mono else app.state.sensor_res["rgb"][1] - 1
+        )
         exp_ctrl = dai.CameraControl().setAutoExposureRegion(roi_x, roi_y, roi_w, roi_h)
         app.state.q_ctrl.send(exp_ctrl)
         app.state.exposure_region_active = False
@@ -1317,8 +1394,8 @@ async def show_activate_dialog(config_name, has_network_changes):
         ui.notification("Configuration not activated!", type="warning", timeout=2)
 
 
-async def save_to_file(config_path):
-    """Save configuration to specified file path."""
+async def save_to_file(config_path, suppress_apply_dialog=False):
+    """Save configuration to specified file path.""" 
     has_network_changes = check_config_changes(app.state.config.network,
                                                app.state.config_updates["network"])
 
@@ -1343,14 +1420,15 @@ async def save_to_file(config_path):
     app.state.configs = sorted([file.name for file in (BASE_PATH / "configs").glob("*.yaml")
                                 if file.name != "config_selector.yaml"])
 
-    if config_path.name == app.state.config_active:
-        # Update currently loaded config if saving to same config file
-        app.state.config = parse_yaml(config_path)
-        await show_apply_dialog(config_path.name, has_network_changes)
-    else:
-        # Reset config updates if saving to a different config file
-        app.state.config_updates = copy.deepcopy(dict(app.state.config))
-        await show_activate_dialog(config_path.name, has_network_changes)
+    if not suppress_apply_dialog:
+        if config_path.name == app.state.config_active:
+            # Update currently loaded config if saving to same config file
+            app.state.config = parse_yaml(config_path)
+            await show_apply_dialog(config_path.name, has_network_changes)
+        else:
+            # Reset config updates if saving to a different config file
+            app.state.config_updates = copy.deepcopy(dict(app.state.config))
+            await show_activate_dialog(config_path.name, has_network_changes)
 
 
 async def create_new_config():
@@ -1407,7 +1485,7 @@ async def create_new_config():
     await save_to_file(config_new_path)
 
 
-async def save_config():
+async def save_config(silent=False, suppress_apply_dialog=False):
     """Save configuration while preserving comments and structure."""
     if app.state.config_active == "config_default.yaml":
         ui.notification("Cannot save changes to default configuration!", type="warning", timeout=2)
@@ -1415,6 +1493,10 @@ async def save_config():
         return
 
     config_current_path = BASE_PATH / "configs" / app.state.config_active
+
+    if silent:
+        await save_to_file(config_current_path, suppress_apply_dialog=suppress_apply_dialog)
+        return
 
     with ui.dialog() as dialog, ui.card():
         ui.label(f"Save changes to '{app.state.config_active}'?")
@@ -1429,7 +1511,7 @@ async def save_config():
     elif action == "new":
         await create_new_config()
     elif action == "overwrite":
-        await save_to_file(config_current_path)
+        await save_to_file(config_current_path, suppress_apply_dialog=suppress_apply_dialog)
 
 
 async def start_recording():
