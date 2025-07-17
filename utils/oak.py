@@ -73,66 +73,23 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
     # Get relevant config parameters from either webapp (live stream) or camera (recording) section
     config_section = getattr(config, "webapp" if use_webapp_config else "camera")
 
-    if use_mono:
-        cam_mono_left = pipeline.create(dai.node.MonoCamera)
-        cam_mono_left.setCamera("left")
-        cam_mono_left.setFps(config_section.fps)
-
-        # Set video size based on configuration
-        res_hq = (config_section.resolution.width, config_section.resolution.height)
-
-        # Create ImageManip nodes for HQ frames and model input
-        manip_hq = pipeline.create(dai.node.ImageManip)
-        manip_model = pipeline.create(dai.node.ImageManip)       
-        
-        # Configure resolution and scaling
-        if res_hq[0] <= 640 and res_hq[1] <= 400:
-            # Use 400p for lower resolutions
-            cam_mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_400_P)
-            sensor_res = (640, 400)
+    # Get resolution parameters
+    # For mono mode, use resolution_mono from config if available, otherwise use regular resolution
+    if use_webapp_config:
+        res_hq = (config_section.resolution.width, config_section.resolution.height) # HQ frames
+    else:
+        if use_mono and hasattr(config_section, 'resolution_mono'):
+            res_hq = (config_section.resolution_mono.width, config_section.resolution_mono.height)
         else:
-            # Use 720p for all other resolutions
-            cam_mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
-            sensor_res = (1280, 720)
-
-        # Configure model input path
-        res_lq = (config.detection.resolution.width, config.detection.resolution.height)
-        manip_model.initialConfig.setResize(*res_lq)
-
-        # Check aspect ratio and adjust if needed
-        if abs(res_hq[0] / res_hq[1] - 1) > 0.01:   # check if resolution is not ~1:1
-            manip_model.initialConfig.setKeepAspectRatio(False)   # stretch frames to square for model input
-
-        # Link nodes: MonoCamera -> HQ ImageManip -> Encoder
-        #            MonoCamera -> Model ImageManip
-        cam_mono_left.out.link(manip_hq.inputImage)
-        cam_mono_left.out.link(manip_model.inputImage)
-
-        # MJPEG encoder for mono stream
-        encoder = pipeline.create(dai.node.VideoEncoder)
-        encoder.setDefaultProfilePreset(1, dai.VideoEncoderProperties.Profile.MJPEG)
-        encoder.setQuality(config_section.jpeg_quality)
-        manip_hq.out.link(encoder.input)
-
-        if create_xin:
-            xin_ctrl = pipeline.create(dai.node.XLinkIn)
-            xin_ctrl.setStreamName("control")
-            xin_ctrl.out.link(cam_mono_left.inputControl)
-
-        xout_mono = pipeline.create(dai.node.XLinkOut)
-        xout_mono.setStreamName("frame")
-        encoder.bitstream.link(xout_mono.input)
-
-        return pipeline, sensor_res
-
-    res_hq = (config_section.resolution.width, config_section.resolution.height)      # HQ frames
+            res_hq = (config_section.resolution.width, config_section.resolution.height)      # HQ frames
     res_lq = (config.detection.resolution.width, config.detection.resolution.height)  # model input
 
+    # --- RGB camera node ---
     # Create and configure color camera node
     cam_rgb = pipeline.create(dai.node.ColorCamera)
     cam_rgb.setFps(config_section.fps)
     cam_rgb.setResolution(dai.ColorCameraProperties.SensorResolution.THE_4_K)
-    sensor_res = cam_rgb.getResolutionSize()
+    #sensor_res = cam_rgb.getResolutionSize()
     cam_rgb.setInterleaved(False)  # planar layout
     cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
 
@@ -150,6 +107,8 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
     else:
         cam_rgb.setIspScale(1, 3)  # use ISP to downscale resolution from 4K to 720p
         cam_rgb.setVideoSize(*res_hq)
+
+    rgb_width, rgb_height = cam_rgb.getResolutionSize()
 
     cam_rgb.setPreviewSize(*res_lq)               # downscale (+ crop) LQ frames for model input
     if abs(res_hq[0] / res_hq[1] - 1) > 0.01:     # check if HQ resolution is not ~1:1 aspect ratio
@@ -179,11 +138,65 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
     cam_rgb.initialControl.setLumaDenoise(config.camera.isp.luma_denoise)
     cam_rgb.initialControl.setChromaDenoise(config.camera.isp.chroma_denoise)
 
-    # Create and configure video encoder node and define input
-    encoder = pipeline.create(dai.node.VideoEncoder)
-    encoder.setDefaultProfilePreset(1, dai.VideoEncoderProperties.Profile.MJPEG)
-    encoder.setQuality(config_section.jpeg_quality)
-    cam_rgb.video.link(encoder.input)  # HQ frames as encoder input
+    # --- Mono camera node ---
+    # Create and configure mono camera node
+    cam_mono_left = pipeline.create(dai.node.MonoCamera)
+    cam_mono_left.setCamera("left")
+    cam_mono_left.setFps(config_section.fps)    
+    cam_mono_left.setResolution(dai.MonoCameraProperties.SensorResolution.THE_720_P)
+
+    # Set mono camera to manual exposure if requested in config
+    if getattr(config.camera, 'mode', None) == 'mono' and getattr(config.camera.exposure, 'mode', None) == 'manual':
+        # Set manual exposure/ISO if available in config
+        exp_time = getattr(config.camera.exposure, 'time', None)
+        iso = getattr(config.camera.exposure, 'iso', None)
+        if exp_time is not None and iso is not None:
+            try:
+                exp_time_us = int(float(exp_time) * 1000)
+                iso_i = int(iso)
+                cam_mono_left.initialControl.setManualExposure(exp_time_us, iso_i)
+            except Exception:
+                pass
+
+    # Set ISP configuration parameters
+    cam_mono_left.initialControl.setSharpness(config.camera.isp.sharpness)
+    cam_mono_left.initialControl.setLumaDenoise(config.camera.isp.luma_denoise)
+    cam_mono_left.initialControl.setChromaDenoise(config.camera.isp.chroma_denoise)
+    #cam_mono_left.initialControl.setContrast(2) 
+
+    # --- Both camera nodes ---
+    # Create and configure video encoders node and define input
+    encoder_rgb = pipeline.create(dai.node.VideoEncoder)
+    encoder_rgb.setDefaultProfilePreset(1, dai.VideoEncoderProperties.Profile.MJPEG)
+    encoder_rgb.setQuality(config_section.jpeg_quality)
+    cam_rgb.video.link(encoder_rgb.input)  # HQ frames as encoder input
+
+    # Create ImageManip node to crop mono frames to config resolution
+    manip_mono_hq = pipeline.create(dai.node.ImageManip)
+    mono_sensor_width, mono_sensor_height = cam_mono_left.getResolutionSize()
+    target_width, target_height = res_hq
+
+    x1 = (mono_sensor_width - target_width) / 2  / mono_sensor_width
+    x2 = (mono_sensor_width + target_width) / 2  / mono_sensor_width
+    y1 = 0.0
+    y2 = 1.0
+
+    manip_mono_hq.initialConfig.setCropRect(x1, y1, x2, y2)
+    cam_mono_left.out.link(manip_mono_hq.inputImage)
+
+    encoder_mono = pipeline.create(dai.node.VideoEncoder)
+    encoder_mono.setDefaultProfilePreset(1, dai.VideoEncoderProperties.Profile.MJPEG)
+    encoder_mono.setQuality(config_section.jpeg_quality)
+    manip_mono_hq.out.link(encoder_mono.input)
+
+    # Create ImageManip nodes for HQ frames and model input
+    manip_model = pipeline.create(dai.node.ImageManip) 
+    manip_model.initialConfig.setResize(*res_lq) # resize LQ frames to model input resolution
+
+    # Check aspect ratio and adjust if needed
+    if abs(res_hq[0] / res_hq[1] - 1) > 0.01:   # check if resolution is not ~1:1
+        manip_model.initialConfig.setKeepAspectRatio(False)   # stretch frames to square for model input
+    manip_mono_hq.out.link(manip_model.inputImage) 
 
     # Create and configure YOLO detection network node and define input
     yolo = pipeline.create(dai.node.YoloDetectionNetwork)
@@ -195,7 +208,7 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
     yolo.setAnchors(config_model.nn_config.NN_specific_metadata.anchors)
     yolo.setAnchorMasks(config_model.nn_config.NN_specific_metadata.anchor_masks)
     yolo.setNumInferenceThreads(2)
-    cam_rgb.preview.link(yolo.input)  # downscaled + cropped/stretched LQ frames as model input
+    manip_model.out.link(yolo.input)  # downscaled + cropped/stretched LQ frames as model input
     yolo.input.setBlocking(False)     # non-blocking input stream
 
     # Create and configure object tracker node and define inputs
@@ -203,31 +216,62 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
     tracker.setTrackerType(dai.TrackerType.ZERO_TERM_IMAGELESS)
     tracker.setTrackerIdAssignmentPolicy(dai.TrackerIdAssignmentPolicy.UNIQUE_ID)
     yolo.passthrough.link(tracker.inputTrackerFrame)  # passthrough LQ frames as tracker input
-    yolo.passthrough.link(tracker.inputDetectionFrame)
+    yolo.passthrough.link(tracker.inputDetectionFrame) 
     yolo.out.link(tracker.inputDetections)            # detections from YOLO model as tracker input
 
     # Create and configure sync node and define inputs
     sync = pipeline.create(dai.node.Sync)
-    sync.setSyncThreshold(timedelta(milliseconds=100))
-    encoder.bitstream.link(sync.inputs["frames"])  # HQ frames (MJPEG-encoded bitstream)
-    tracker.out.link(sync.inputs["tracker"])       # tracker + model output
+    sync.setSyncThreshold(timedelta(milliseconds=300))
+     
+    if use_webapp_config:
+        if use_mono and not getattr(config.camera, "mode", None) == "rgb":
+            encoder_mono.bitstream.link(sync.inputs["frames_mono"]) # HQ frames (MJPEG-encoded bitstream)
+            tracker.out.link(sync.inputs["tracker"])    # tracker + model output
+        else:
+            encoder_rgb.bitstream.link(sync.inputs["frames_rgb"])   # HQ frames (MJPEG-encoded bitstream)
+            tracker.out.link(sync.inputs["tracker"])    # tracker + model output
+    else:
+        encoder_mono.bitstream.link(sync.inputs["frames_mono"])
+        encoder_rgb.bitstream.link(sync.inputs["frames_rgb"])   # HQ frames (MJPEG-encoded bitstream)
+        tracker.out.link(sync.inputs["tracker"]) 
 
     # Create message demux node and define input + outputs
     demux = pipeline.create(dai.node.MessageDemux)
     sync.out.link(demux.input)
 
     xout_rgb = pipeline.create(dai.node.XLinkOut)
-    xout_rgb.setStreamName("frame")
-    demux.outputs["frames"].link(xout_rgb.input)       # synced MJPEG-encoded HQ frames
+    xout_rgb.setStreamName("frame_rgb")
+    demux.outputs["frames_rgb"].link(xout_rgb.input)       # synced MJPEG-encoded HQ frames
+
+    xout_mono = pipeline.create(dai.node.XLinkOut)
+    xout_mono.setStreamName("frame_mono")
+    demux.outputs["frames_mono"].link(xout_mono.input)     # synced MJPEG-encoded mono HQ frames
 
     xout_tracker = pipeline.create(dai.node.XLinkOut)
     xout_tracker.setStreamName("track")
     demux.outputs["tracker"].link(xout_tracker.input)  # synced tracker + model output
 
-    if create_xin:
-        # Create XLinkIn node to send control commands to color camera node
-        xin_ctrl = pipeline.create(dai.node.XLinkIn)
-        xin_ctrl.setStreamName("control")
-        xin_ctrl.out.link(cam_rgb.inputControl)
+    # Create XLinkOut node for model input frames
+    if not use_webapp_config:
+        # Create encoder for model input frames for better performance
+        encoder_model = pipeline.create(dai.node.VideoEncoder)
+        encoder_model.setDefaultProfilePreset(1, dai.VideoEncoderProperties.Profile.MJPEG)
+        encoder_model.setQuality(config_section.jpeg_quality)
+        manip_model.out.link(encoder_model.input)
+        
+        xout_model_input = pipeline.create(dai.node.XLinkOut)
+        xout_model_input.setStreamName("model_input")
+        encoder_model.bitstream.link(xout_model_input.input)  # Use encoded bitstream instead of raw frames
 
+    # Always create control queues
+    xin_ctrl_rgb = pipeline.create(dai.node.XLinkIn)
+    xin_ctrl_rgb.setStreamName("control_rgb")
+    xin_ctrl_rgb.out.link(cam_rgb.inputControl)
+
+    xin_ctrl_mono = pipeline.create(dai.node.XLinkIn)
+    xin_ctrl_mono.setStreamName("control_mono")
+    xin_ctrl_mono.out.link(cam_mono_left.inputControl)
+    
+    sensor_res = {"rgb": (rgb_width, rgb_height), "mono": (target_width, target_height)}
+    
     return pipeline, sensor_res
