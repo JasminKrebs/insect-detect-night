@@ -18,3 +18,6 @@ def set_led_off():
 
 def set_led_detect(brightness):
     led_send_command("detect", brightness)
+
+def set_led_burst(brightness):
+    led_send_command("burst", brightness)
