@@ -19,10 +19,14 @@ deployment:
 
 # Camera settings
 camera:
+  mode: rgb              # Options: rgb, mono
   fps: 20                # Camera frame rate (range: 1-30) -> higher fps increases power consumption
   resolution:            # Resolution of captured images (HQ frames)
     width: 3840          # Frame width (max. 3840) -> must be multiple of 32, e.g. 2176 for ~square
     height: 2160         # Frame height (max. 2160) -> must be multiple of 2
+  resolution_mono:
+    width: 1280          # Frame width for mono mode (max. 1920) -> must be multiple of 32, e.g. 736
+    height: 720          # Frame height for mono mode (max. 1080) -> must be multiple of 2
   jpeg_quality: 80       # JPEG quality of captured images (range: 0-100, recommended: 60-90)
   focus:
     mode: continuous     # Options: continuous, manual, range
@@ -45,8 +49,9 @@ camera:
 # Detection settings
 detection:
   model:
-    weights: yolov5n_320_openvino_2022.1_4shave.blob  # Model weights file in "models" directory
-    config: yolov5n_320_openvino_2022.1_4shave.json   # Model config file in "models" directory
+    #weights: yolov5n_320_openvino_2022.1_4shave.blob  # Model weights file in "models" directory
+    #config: yolov5n_320_openvino_2022.1_4shave.json   # Model config file in "models" directory
+    weights: best.blob
   resolution:          # Resolution of downscaled + stretched/cropped LQ frames for model input
     width: 320         # Frame width
     height: 320        # Frame height
