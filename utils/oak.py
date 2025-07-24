@@ -187,7 +187,7 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
     encoder_mono = pipeline.create(dai.node.VideoEncoder)
     encoder_mono.setDefaultProfilePreset(1, dai.VideoEncoderProperties.Profile.MJPEG)
     encoder_mono.setQuality(config_section.jpeg_quality)
-    #manip_mono_hq.out.link(encoder_mono.input)
+    manip_mono_hq.out.link(encoder_mono.input)
 
     # Create ImageManip nodes for HQ frames and model input
     manip_model = pipeline.create(dai.node.ImageManip) 
@@ -217,7 +217,7 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
     tracker.setTrackerIdAssignmentPolicy(dai.TrackerIdAssignmentPolicy.UNIQUE_ID)
     yolo.passthrough.link(tracker.inputTrackerFrame)  # passthrough LQ frames as tracker input
     yolo.passthrough.link(tracker.inputDetectionFrame) 
-    yolo.passthrough.link(encoder_mono.input)
+    #yolo.passthrough.link(encoder_mono.input)
     yolo.out.link(tracker.inputDetections)            # detections from YOLO model as tracker input
 
     # Create and configure sync node and define inputs
