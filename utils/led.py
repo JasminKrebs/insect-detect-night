@@ -45,6 +45,22 @@ def set_led_detect(target_brightness, fade_time=1.0):
         led.setPixelColor(i, Color(0, 0, 0))
     led.show()
 
+def set_led_burst(target_brightness, hold_time=5, fade_time=1.0):
+    """Fade in LEDs to target brightness, hold for hold_time seconds, then turn off."""
+    steps = 20
+    delay = fade_time / steps
+    for step in range(1, steps + 1):
+        brightness = int(target_brightness * step / steps)
+        led.setBrightness(brightness)
+        for i in range(led.numPixels()):
+            led.setPixelColor(i, Color(255, 255, 255))
+        led.show()
+        time.sleep(delay)
+    time.sleep(hold_time)
+    for i in range(led.numPixels()):
+        led.setPixelColor(i, Color(0, 0, 0))
+    led.show()
+
 # UNIX socket path
 SOCKET_PATH = "/tmp/led.sock"
 
@@ -69,5 +85,7 @@ while True:
             set_led_off()
         elif cmd == "detect":
             set_led_detect(value)
+        elif cmd == "burst":
+            set_led_burst(value)
     except Exception as e:
         print("Invalid command:", data, e)
