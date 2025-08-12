@@ -60,6 +60,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
+from gpiozero import LED
 from pathlib import Path
 
 import cv2
@@ -77,8 +78,7 @@ from utils.led_client import set_led_burst, set_led_off, set_led_on
 
 # Set camera trap ID (default: hostname) and base path (default: "insect-detect" directory)
 CAM_ID = socket.gethostname()
-#BASE_PATH = Path.home() / "insect-detect-night"
-BASE_PATH = Path(__file__).parent # PC and RPi
+BASE_PATH = Path(__file__).parent
 
 # Create directory where all data will be stored (images, metadata, logs, configs)
 DATA_PATH = BASE_PATH / "data"
@@ -142,21 +142,21 @@ if PWR_MGMT:
         subprocess.run(["sudo", "shutdown", "-h", "now"], check=True)
 
 # Set up LED on GPIO pin 12
-#led = LED(12)
-#
-## Blink LED fast if USB C battery is not connected/active
-#chargelevel = get_chargelevel()
-#if chargelevel != "USB_C_IN":
-#    led.blink(on_time=0.3, off_time=0.3, background=True)
-#
-#    # Wait until USB C battery is connected/active before starting recording session
-#    while chargelevel != "USB_C_IN":
-#        time.sleep(1)
-#        chargelevel = get_chargelevel()
-#    led.off()
-#
-## Turn on LED to indicate that the recording session is running
-#led.on()
+led = LED(12)
+
+# Blink LED fast if USB C battery is not connected/active
+chargelevel = get_chargelevel()
+if chargelevel != "USB_C_IN":
+    led.blink(on_time=0.3, off_time=0.3, background=True)
+
+    # Wait until USB C battery is connected/active before starting recording session
+    while chargelevel != "USB_C_IN":
+        time.sleep(1)
+        chargelevel = get_chargelevel()
+    led.off()
+
+# Turn on LED to indicate that the recording session is running
+led.on()
 
 # Set duration of recording session (*60 to convert from min to s)
 if PWR_MGMT:
@@ -384,7 +384,7 @@ try:
                             timestamp_model = datetime.now()
                             timestamp_model_str = timestamp_model.strftime("%Y-%m-%d_%H-%M-%S-%f")
                             model_filename = f"{timestamp_model_str}_model_input_416x416_19cm"
-                            executor.submit(save_encoded_frame, save_path, model_filename, model_frame_data)
+                            #executor.submit(save_encoded_frame, save_path, model_filename, model_frame_data)
                     else:
                         frame_dai = None  # Set to None if no frame is available
 
