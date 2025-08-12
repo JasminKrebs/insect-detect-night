@@ -31,6 +31,7 @@ import sys
 import time
 import threading
 from datetime import datetime
+from gpiozero import LED
 from pathlib import Path
 
 import depthai as dai
@@ -42,6 +43,7 @@ from utils.app import create_duration_inputs, convert_duration, grid_separator, 
 from utils.config import check_config_changes, parse_json, parse_yaml, update_config_selector, update_nested_dict
 from utils.network import get_current_connection, get_ip_address, set_up_network
 from utils.oak import convert_bbox_roi, create_pipeline
+from utils.power import init_power_manager
 from utils.led_client import set_led_detect, set_led_off, set_led_on
 
 # Set base path and get hostname + IP address
@@ -50,24 +52,24 @@ HOSTNAME = socket.gethostname()
 IP_ADDRESS = get_ip_address()
 
 # Initialize power manager
-#get_chargelevel, get_power_info, external_shutdown = init_power_manager("wittypi")
-#
-## Set up LED on GPIO pin 12
-#led = LED(12)
-#
-## Blink LED fast if USB C battery is not connected/active
-#chargelevel = get_chargelevel()
-#if chargelevel != "USB_C_IN":
-#    led.blink(on_time=0.3, off_time=0.3, background=True)
-#
-#    # Wait until USB C battery is connected/active before starting web app
-#    while chargelevel != "USB_C_IN":
-#        time.sleep(1)
-#        chargelevel = get_chargelevel()
-#    led.off()
-#
-## Blink LED slowly to indicate that the web app is running
-#led.blink(on_time=1, off_time=1, background=True)
+get_chargelevel, get_power_info, external_shutdown = init_power_manager("wittypi")
+
+# Set up LED on GPIO pin 12
+led = LED(12)
+
+# Blink LED fast if USB C battery is not connected/active
+chargelevel = get_chargelevel()
+if chargelevel != "USB_C_IN":
+    led.blink(on_time=0.3, off_time=0.3, background=True)
+
+    # Wait until USB C battery is connected/active before starting web app
+    while chargelevel != "USB_C_IN":
+        time.sleep(1)
+        chargelevel = get_chargelevel()
+    led.off()
+
+# Blink LED slowly to indicate that the web app is running
+led.blink(on_time=1, off_time=1, background=True)
 
 async def start_camera(base_path):
     """Connect to OAK device and start camera with selected configuration."""
@@ -1429,7 +1431,10 @@ async def save_to_file(config_path, suppress_apply_dialog=False):
             # Reset config updates if saving to a different config file
             app.state.config_updates = copy.deepcopy(dict(app.state.config))
             await show_activate_dialog(config_path.name, has_network_changes)
-
+    else:
+        # When suppressing apply dialog, still update the in-memory config if saving to active config
+        if config_path.name == app.state.config_active:
+            app.state.config = parse_yaml(config_path)
 
 async def create_new_config():
     """Create a new configuration file."""
