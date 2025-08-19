@@ -45,32 +45,12 @@ from utils.network import get_current_connection, get_ip_address, set_up_network
 from utils.oak import convert_bbox_roi, create_pipeline
 from utils.power import init_power_manager
 from utils.led_client import set_led_detect, set_led_off, set_led_on
+from utils.light_sensor import init_light_sensor, create_get_light_data
 
 # Set base path and get hostname + IP address
 BASE_PATH = Path(__file__).parent
 HOSTNAME = socket.gethostname()
 IP_ADDRESS = get_ip_address()
-
-# Initialize power manager
-get_chargelevel, get_power_info, external_shutdown = init_power_manager("wittypi")
-
-# Set up LED on GPIO pin 12
-led = LED(12)
-
-# Blink LED fast if USB C battery is not connected/active
-chargelevel = get_chargelevel()
-if chargelevel != "USB_C_IN":
-    led.blink(on_time=0.3, off_time=0.3, background=True)
-
-    # Wait until USB C battery is connected/active before starting web app
-    while chargelevel != "USB_C_IN":
-        time.sleep(1)
-        chargelevel = get_chargelevel()
-    led.off()
-
-# Blink LED slowly to indicate that the web app is running
-led.blink(on_time=1, off_time=1, background=True)
-
 
 # Create directory where logs will be stored
 LOGS_PATH = BASE_PATH / "logs"
@@ -158,6 +138,25 @@ def create_ui_layout():
         ui.button("Start Recording", on_click=start_recording, color="teal", icon="play_circle")
         ui.button("Stop App", on_click=confirm_shutdown, color="red", icon="power_settings_new")
 
+# Initialize power manager
+#get_chargelevel, get_power_info, external_shutdown = init_power_manager("wittypi")
+#
+## Set up LED on GPIO pin 12
+#led = LED(12)
+#
+## Blink LED fast if USB C battery is not connected/active
+#chargelevel = get_chargelevel()
+#if chargelevel != "USB_C_IN":
+#    led.blink(on_time=0.3, off_time=0.3, background=True)
+#
+#    # Wait until USB C battery is connected/active before starting web app
+#    while chargelevel != "USB_C_IN":
+#        time.sleep(1)
+#        chargelevel = get_chargelevel()
+#    led.off()
+#
+## Blink LED slowly to indicate that the web app is running
+#led.blink(on_time=1, off_time=1, background=True)
 
 async def start_camera():
     """Connect to OAK device and start camera with selected configuration."""
@@ -174,8 +173,8 @@ async def start_camera():
         app.state.models = sorted([file.name for file in (BASE_PATH / "models").glob("*.blob")])
         app.state.configs = sorted([file.name for file in (BASE_PATH / "configs").glob("*.yaml")
                                 if file.name != "config_selector.yaml"])
-    app.state.scripts = sorted([file.name for file in BASE_PATH.glob("*.py")])
-    app.state.logs = sorted([file.name for file in LOGS_PATH.glob("*.log")])
+        app.state.scripts = sorted([file.name for file in BASE_PATH.glob("*.py")])
+        app.state.logs = sorted([file.name for file in LOGS_PATH.glob("*.log")])
         
     # Ensure night section exists in config_updates
     if "night" not in app.state.config_updates:
@@ -214,7 +213,14 @@ async def start_camera():
     app.state.frame_count = 0
     app.state.prev_time = time.monotonic()
     app.state.last_led_trigger_time = 0 
-    app.state.led_event = threading.Event() 
+    app.state.led_event = threading.Event()
+    
+    # Initialize light sensor
+    app.state.light_sensor = init_light_sensor()
+    app.state.get_light_data = create_get_light_data(app.state.light_sensor)
+    app.state.lux = 0.0
+    app.state.infrared = 0.0
+    app.state.visible = 0.0
 
     # Create OAK camera pipeline and start device in USB2 mode
     pipeline, app.state.sensor_res = create_pipeline(BASE_PATH, app.state.config, app.state.config_model,
@@ -255,7 +261,7 @@ async def restart_camera():
         app.state.device = None
 
     await asyncio.sleep(0.5)
-    await start_camera(BASE_PATH)
+    await start_camera()
     await setup_video_stream()
     app.state.frame_timer = ui.timer(round(1 / app.state.config.webapp.fps, 3), update_frame_and_overlay)
 
@@ -313,6 +319,14 @@ async def setup_video_stream():
                         app.state.lens_pos = frame_dai.getLensPosition()
                         app.state.iso_sens = frame_dai.getSensitivity()
                         app.state.exp_time = frame_dai.getExposureTime().total_seconds() * 1000  # milliseconds
+                        
+                        # Update light sensor data
+                        light_data = app.state.get_light_data()
+                        if light_data:
+                            app.state.lux = light_data.get("lux", 0.0)
+                            app.state.infrared = light_data.get("infrared", 0.0)
+                            app.state.visible = light_data.get("visible", 0.0)
+                        
                         app.state.frame_count = 0
                         app.state.prev_time = current_time
                     return Response(content=frame_bytes, media_type="image/jpeg")
@@ -466,6 +480,16 @@ def create_video_stream_container():
         ui.separator().props("vertical")
         (ui.label().classes("font-bold text-xs")
          .bind_text_from(app.state, "exp_time", lambda exp: f"Exposure: {exp:.1f} ms"))
+        ui.separator().props("vertical")
+        (ui.label().classes("font-bold text-xs")
+         .bind_text_from(app.state, "lux", lambda lux: f"Sensor Lux: {lux:.1f}"))
+        ui.separator().props("vertical")
+        (ui.label().classes("font-bold text-xs")
+         .bind_text_from(app.state, "infrared", lambda ir: f"Sensor IR: {ir}"))
+        ui.separator().props("vertical")
+        (ui.label().classes("font-bold text-xs")
+         .bind_text_from(app.state, "visible", lambda vis: f"Sensor Visible: {vis}"))
+        ui.separator().props("vertical")
 
 
 async def set_manual_focus(e):

@@ -76,6 +76,7 @@ from utils.oak import convert_bbox_roi, create_get_temp_oak, create_pipeline
 from utils.post import process_images
 from utils.power import init_power_manager
 from utils.led_client import set_led_burst, set_led_off, set_led_on
+from utils.light_sensor import init_light_sensor, create_get_light_data
 
 # Set base path and get camera trap ID (default: hostname)
 BASE_PATH = Path(__file__).parent
@@ -147,21 +148,33 @@ if PWR_MGMT:
         subprocess.run(["sudo", "shutdown", "-h", "now"], check=False)
 
 # Set up LED on GPIO pin 12
-led = LED(12)
+#led = LED(12)
+#
+## Blink LED fast if USB C battery is not connected/active
+#chargelevel = get_chargelevel()
+#if chargelevel != "USB_C_IN":
+#    led.blink(on_time=0.3, off_time=0.3, background=True)
+#
+#    # Wait until USB C battery is connected/active before starting recording session
+#    while chargelevel != "USB_C_IN":
+#        time.sleep(1)
+#        chargelevel = get_chargelevel()
+#    led.off()
+#
+## Turn on LED to indicate that the recording session is running
+#led.on()
 
-# Blink LED fast if USB C battery is not connected/active
-chargelevel = get_chargelevel()
-if chargelevel != "USB_C_IN":
-    led.blink(on_time=0.3, off_time=0.3, background=True)
-
-    # Wait until USB C battery is connected/active before starting recording session
-    while chargelevel != "USB_C_IN":
-        time.sleep(1)
-        chargelevel = get_chargelevel()
-    led.off()
-
-# Turn on LED to indicate that the recording session is running
-led.on()
+# Initialize light sensor
+light_sensor = init_light_sensor()
+get_light_data = create_get_light_data(light_sensor)
+try:
+    initial_light = get_light_data()
+    initial_lux = initial_light["lux"] if initial_light else 0.0
+    initial_ir = initial_light["infrared"] if initial_light else 0.0
+    initial_visible = initial_light["visible"] if initial_light else 0.0
+    logger.info(f"[LIGHT SENSOR] Initial lux value: {initial_lux}, IR: {initial_ir}, Visible: {initial_visible}")
+except Exception as e:
+    logger.warning(f"[LIGHT SENSOR] Error reading initial light values: {e}")
 
 # Set duration of recording session (*60 to convert from min to s)
 if PWR_MGMT:
@@ -226,7 +239,6 @@ try:
         for attempt in range(1, 5):
             try:
                 q_ctrl_rgb = device.getInputQueue(name="control_rgb", maxSize=4, blocking=False)
-                logger.info(f"[CONTROL QUEUE] Got 'control_rgb' on attempt {attempt}")
                 break
             except RuntimeError as e:
                 logger.warning(f"[CONTROL QUEUE] 'control_rgb' not available (attempt {attempt}): {e}")
@@ -237,7 +249,6 @@ try:
         for attempt in range(1, 5):
             try:
                 q_ctrl_mono = device.getInputQueue(name="control_mono", maxSize=4, blocking=False)
-                logger.info(f"[CONTROL QUEUE] Got 'control_mono' on attempt {attempt}")
                 break
             except RuntimeError as e:
                 logger.warning(f"[CONTROL QUEUE] 'control_mono' not available (attempt {attempt}): {e}")
@@ -259,7 +270,7 @@ try:
         # Write header to metadata .csv file
         metadata_writer = csv.DictWriter(metadata_file, fieldnames=[
             "cam_ID", "rec_ID", "timestamp", "lens_position", "iso_sensitivity", "exposure_time", "ir_intensity", "led_brightness",
-            "label", "confidence", "track_ID", "track_status", "x_min", "y_min", "x_max", "y_max"
+            "lux", "infrared", "visible", "label", "confidence", "track_ID", "track_status", "x_min", "y_min", "x_max", "y_max"
         ])
         metadata_writer.writeheader()
 
@@ -412,7 +423,18 @@ try:
 
                     # Save metadata from camera and tracker + model output to .csv file
                     # Only write metadata if a frame was saved
-                    if current_tracklets: 
+                    if current_tracklets:
+                        try:
+                            light_data = get_light_data()
+                            lux_value = light_data["lux"] if light_data else 0.0
+                            ir_value = light_data["infrared"] if light_data else 0.0
+                            visible_value = light_data["visible"] if light_data else 0.0
+                        except Exception as e:
+                            logger.warning(f"[LIGHT SENSOR] Error reading sensor: {e}")
+                            lux_value = 0.0
+                            ir_value = 0.0
+                            visible_value = 0.0
+
                         for tracklet in current_tracklets:
                             # Check if tracklet is active (not "LOST" or "REMOVED")
                             tracklet_status = tracklet.status.name
@@ -429,6 +451,9 @@ try:
                                     "exposure_time": round(exp_time, 2),
                                     "ir_intensity": IR_INTENSITY,
                                     "led_brightness": LED_BRIGHTNESS,
+                                    "lux": round(lux_value, 2),
+                                    "infrared": ir_value,
+                                    "visible": visible_value,
                                     "label": LABELS[tracklet.srcImgDetection.label],
                                     "confidence": round(tracklet.srcImgDetection.confidence, 2),
                                     "track_ID": track_id,
