@@ -2,22 +2,22 @@
 Description=Insect Detect Startup Service
 Documentation=https://maxsitt.github.io/insect-detect-docs/
 Wants=NetworkManager.service
-After=network.target NetworkManager.service
+After=network.target NetworkManager.service led-server.service
+Requires=led-server.service
 Before=multi-user.target
 
 [Service]
 Type=oneshot
 User=pi
 Group=pi
-WorkingDirectory=/home/pi/insect-detect
-ExecStart=/home/pi/env_insdet/bin/python3 /home/pi/insect-detect/startup.py
-Environment=PYTHONPATH=/home/pi/insect-detect
+WorkingDirectory=/home/pi/insect-detect-night
+ExecStart=/home/pi/env_insdet/bin/python3 /home/pi/insect-detect-night/startup.py
+Environment=PYTHONPATH=/home/pi/insect-detect-night
 Environment=HOME=/home/pi
 RemainAfterExit=yes
 Restart=no
 TimeoutStartSec=3600
 TimeoutStopSec=30
-PrivateTmp=true
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=insect-detect-startup
