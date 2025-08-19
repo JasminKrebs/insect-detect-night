@@ -33,7 +33,7 @@ from utils.log import subprocess_log
 from utils.network import create_hotspot, set_up_network
 
 # Set base path and get hostname
-BASE_PATH = Path.home() / "insect-detect"
+BASE_PATH = Path.home() / "insect-detect-night"
 HOSTNAME = socket.gethostname()
 
 # Create directory where logs will be stored
