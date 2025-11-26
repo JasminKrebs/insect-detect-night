@@ -12,7 +12,7 @@ The camera trap system is composed of low-cost off-the-shelf hardware components
 [Luxonis OAK-D Pro](https://docs.luxonis.com/hardware/products/OAK-D%20Pro),
 [Witty Pi 4 L3V7](https://www.uugear.com/product/witty-pi-4-l3v7/),
 [WS2812 RGB Ring](https://shop.watterott.com/WS2812-RGB-Ring-12-weiss),
-[Lichtsensor, TSL2591](https://www.reichelt.de/de/de/shop/produkt/entwicklerboards_-_lichtsensor_tsl2591-316547)), combined with open source software.
+[Light Sensor, TSL2591](https://www.reichelt.de/de/de/shop/produkt/entwicklerboards_-_lichtsensor_tsl2591-316547)), combined with open source software.
 
 <img src="https://raw.githubusercontent.com/JasminKrebs/insect-detect-night/main/docs/images/cam_trap_setup.jpg" width="400">
 
