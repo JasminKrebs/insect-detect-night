@@ -25,9 +25,9 @@ camera:
     width: 2176          # Frame width (max. 3840) -> must be multiple of 32, e.g. 2176 for ~square
     height: 2160         # Frame height (max. 2160) -> must be multiple of 2
   resolution_mono:
-    width: 736          # Frame width for mono mode (max. 1920) -> must be multiple of 32, e.g. 736
-    height: 720          # Frame height for mono mode (max. 1080) -> must be multiple of 2
-  jpeg_quality: 80       # JPEG quality of captured images (range: 0-100, recommended: 60-90)
+    width: 544          # Frame width for mono mode (max. 1920) -> must be multiple of 32, e.g. 736 # 544: cut off some more pixels from top and bottom to have the same coverage as for RGB
+    height: 544          # Frame height for mono mode (max. 1080) -> must be multiple of 2 # 720
+  jpeg_quality: 90       # JPEG quality of captured images (range: 0-100, recommended: 60-90)
   focus:
     mode: manual     # Options: continuous, manual, range
     type: lens_position      # Options: distance, lens_position (focus type for 'manual' or 'range' mode)
@@ -56,9 +56,9 @@ detection:
     weights: 250812_yolo11n_416_gray_no_clahe_openvino_2022.1_4shave.blob
     config: 250812_yolo11n_416_gray_no_clahe_openvino_2022.1_4shave.json
   resolution:          # Resolution of downscaled + stretched/cropped LQ frames for model input
-    width: 416         # Frame width
-    height: 416        # Frame height
-  conf_threshold: 0.2  # Confidence threshold (overrides model config file) - temporarily lowered for better tracking
+    width: 544         # Frame width
+    height: 544        # Frame height
+  conf_threshold: 0.3 # Confidence threshold (overrides model config file) - temporarily lowered for better tracking
   iou_threshold: 0.4   # IoU threshold (overrides model config file)
   exposure_region:
     enabled: false     # Use bounding box coordinates from detections to set auto exposure region
@@ -79,7 +79,7 @@ recording:
     default: 60     # Duration (minutes) per recording session if powermanager is disabled
   capture_interval:
     detection: 1.0  # Time interval (seconds) between saving HQ frame + metadata while object is detected
-    timelapse: 30.0 # Time interval (seconds) between saving HQ frame (independent of detected objects)
+    timelapse: 10.0 # Time interval (seconds) between saving HQ frame (independent of detected objects)
   shutdown:
     enabled: false     # Shut down Raspberry Pi after recording session is finished or interrupted
 
@@ -117,6 +117,9 @@ webapp:
   resolution:       # Resolution of streamed HQ frames
     width: 736     # Frame width (max. 1920) -> must be multiple of 32, e.g. 736 or 1088 for ~square
     height: 720     # Frame height (max. 1080) -> must be multiple of 2
+  resolution_mono:       # Resolution of streamed HQ frames
+    width: 544     # Frame width (max. 1920) -> must be multiple of 32, e.g. 736 or 1088 for ~square
+    height: 544     # Frame height (max. 1080) -> must be multiple of 2
   jpeg_quality: 70  # JPEG quality of streamed HQ frames (range: 0-100, recommended: 50-80)
   https:
     enabled: false  # Use HTTPS protocol (required for browser Geolocation API to get GPS coordinates)

@@ -74,15 +74,15 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
     config_section = getattr(config, "webapp" if use_webapp_config else "camera")
 
     # Get resolution parameters
-    # For mono mode, use resolution_mono from config if available, otherwise use regular resolution
-    if use_webapp_config:
-        res_hq = (config_section.resolution.width, config_section.resolution.height) # HQ frames
+    # Define separate resolutions for RGB and mono cameras
+    if use_webapp_config: # Same resolution for both in webapp mode
+        res_hq_rgb = (config_section.resolution.width, config_section.resolution.height) # HQ frames
+        res_hq_mono = (config_section.resolution_mono.width, config_section.resolution_mono.height) # HQ frames
     else:
-        if use_mono and hasattr(config_section, 'resolution_mono'):
-            res_hq = (config_section.resolution_mono.width, config_section.resolution_mono.height)
-        else:
-            res_hq = (config_section.resolution.width, config_section.resolution.height)      # HQ frames
-    res_lq = (config.detection.resolution.width, config.detection.resolution.height)  # model input
+        # Recording mode - always use appropriate resolution for each camera
+        res_hq_rgb = (config_section.resolution.width, config_section.resolution.height)
+        res_hq_mono = (config_section.resolution_mono.width, config_section.resolution_mono.height)
+    res_lq = (config.detection.resolution.width, config.detection.resolution.height) # model input
 
     # --- RGB camera node ---
     # Create and configure color camera node
@@ -93,25 +93,30 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
     cam_rgb.setInterleaved(False)  # planar layout
     cam_rgb.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
 
-    if (res_hq[0] > 1920 or res_hq[1] > 1080) and not use_webapp_config:
-        if res_hq[0] <= 3840 and res_hq[1] <= 2160:
-            cam_rgb.setVideoSize(*res_hq)  # crop HQ frames to configured resolution (if required)
-        else:
-            cam_rgb.setVideoSize(min(res_hq[0], 3840), min(res_hq[1], 2160))  # 4K limit for recording
-    elif res_hq[0] > 1280 or res_hq[1] > 720:
-        cam_rgb.setIspScale(1, 2)  # use ISP to downscale resolution from 4K to 1080p
-        if res_hq[0] <= 1920 and res_hq[1] <= 1080:
-            cam_rgb.setVideoSize(*res_hq)
-        else:
-            cam_rgb.setVideoSize(min(res_hq[0], 1920), min(res_hq[1], 1080))  # 1080p limit for web app
-    else:
-        cam_rgb.setIspScale(1, 3)  # use ISP to downscale resolution from 4K to 720p
-        cam_rgb.setVideoSize(*res_hq)
+    #if (res_hq_rgb[0] > 1920 or res_hq_rgb[1] > 1080) and not use_webapp_config:
+    #    if res_hq_rgb[0] <= 3840 and res_hq_rgb[1] <= 2160:
+    #        cam_rgb.setVideoSize(*res_hq_rgb)  # crop HQ frames to configured resolution (if required)
+    #    else:
+    #        cam_rgb.setVideoSize(min(res_hq_rgb[0], 3840), min(res_hq_rgb[1], 2160))  # 4K limit for recording
+    #elif res_hq_rgb[0] > 1280 or res_hq_rgb[1] > 720:
+    #    cam_rgb.setIspScale(1, 2)  # use ISP to downscale resolution from 4K to 1080p
+    #    if res_hq_rgb[0] <= 1920 and res_hq_rgb[1] <= 1080:
+    #        cam_rgb.setVideoSize(*res_hq_rgb)
+    #    else:
+    #        cam_rgb.setVideoSize(min(res_hq_rgb[0], 1920), min(res_hq_rgb[1], 1080))  # 1080p limit for web app
+    #else:
+    #    cam_rgb.setIspScale(1, 3)  # use ISP to downscale resolution from 4K to 720p
+    #    cam_rgb.setVideoSize(*res_hq_rgb)
 
-    rgb_width, rgb_height = cam_rgb.getResolutionSize()
+    if use_webapp_config:
+        cam_rgb.setIspScale(1, 3)  # use ISP to downscale resolution from 4K to 720p
+        rgb_width, rgb_height = cam_rgb.getIspSize()
+        cam_rgb.setVideoSize(rgb_width, rgb_height)
+    else:
+        rgb_width, rgb_height = cam_rgb.getResolutionSize()
 
     cam_rgb.setPreviewSize(*res_lq)               # downscale (+ crop) LQ frames for model input
-    if abs(res_hq[0] / res_hq[1] - 1) > 0.01:     # check if HQ resolution is not ~1:1 aspect ratio
+    if abs(res_hq_rgb[0] / res_hq_rgb[1] - 1) > 0.01:     # check if HQ resolution is not ~1:1 aspect ratio
         cam_rgb.setPreviewKeepAspectRatio(False)  # stretch LQ frames to square for model input
 
     if config.camera.focus.mode == "manual":
@@ -166,20 +171,39 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
 
     # --- Both camera nodes ---
     # Create and configure video encoders node and define input
+    # Create ImageManip node to crop rgb frames to config resolution
+    manip_rgb_hq = pipeline.create(dai.node.ImageManip)
+    target_width_rgb, target_height_rgb = res_hq_rgb
+
+    # Calculate normalized crop coordinates (values between 0-1)
+    # Crop from the right side of the frame (keep the right side)
+    x1_rgb = (rgb_width - target_width_rgb) / rgb_width # Start from right minus target width
+    x2_rgb = 1.0  # Right edge of the frame
+    y1_rgb = 0.0 # Top edge
+    y2_rgb = 1.0 # Bottom edge
+
+    manip_rgb_hq.initialConfig.setCropRect(x1_rgb, y1_rgb, x2_rgb, y2_rgb)
+    
+    # Set maximum output frame size to handle larger images
+    manip_rgb_hq.setMaxOutputFrameSize(3 * target_width_rgb * target_height_rgb)
+    cam_rgb.video.link(manip_rgb_hq.inputImage)
+    
     encoder_rgb = pipeline.create(dai.node.VideoEncoder)
     encoder_rgb.setDefaultProfilePreset(1, dai.VideoEncoderProperties.Profile.MJPEG)
     encoder_rgb.setQuality(config_section.jpeg_quality)
-    cam_rgb.video.link(encoder_rgb.input)  # HQ frames as encoder input
+    manip_rgb_hq.out.link(encoder_rgb.input)
 
     # Create ImageManip node to crop mono frames to config resolution
     manip_mono_hq = pipeline.create(dai.node.ImageManip)
     mono_sensor_width, mono_sensor_height = cam_mono_left.getResolutionSize()
-    target_width, target_height = res_hq
+    target_width_mono, target_height_mono = res_hq_mono
 
-    x1 = (mono_sensor_width - target_width) / 2  / mono_sensor_width
-    x2 = (mono_sensor_width + target_width) / 2  / mono_sensor_width
-    y1 = 0.0
-    y2 = 1.0
+    # Calculate normalized crop coordinates (values between 0-1)
+    # Crop from the right side of the frame (keep the right side)
+    x1 = (mono_sensor_width - target_width_mono) / mono_sensor_width  # Start from right minus target width
+    x2 = 1.0  # Right edge of the frame
+    y1 = ((mono_sensor_height - target_height_mono) // 2) / mono_sensor_height # Top edge
+    y2 = ((mono_sensor_height + target_height_mono) // 2) / mono_sensor_height # Bottom edge
 
     manip_mono_hq.initialConfig.setCropRect(x1, y1, x2, y2)
     cam_mono_left.out.link(manip_mono_hq.inputImage)
@@ -188,13 +212,14 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
     encoder_mono.setDefaultProfilePreset(1, dai.VideoEncoderProperties.Profile.MJPEG)
     encoder_mono.setQuality(config_section.jpeg_quality)
     manip_mono_hq.out.link(encoder_mono.input)
+    #cam_rgb.video.link(encoder_mono.input)
 
     # Create ImageManip nodes for HQ frames and model input
     manip_model = pipeline.create(dai.node.ImageManip) 
     manip_model.initialConfig.setResize(*res_lq) # resize LQ frames to model input resolution
 
     # Check aspect ratio and adjust if needed
-    if abs(res_hq[0] / res_hq[1] - 1) > 0.01:   # check if resolution is not ~1:1
+    if abs(res_hq_mono[0] / res_hq_mono[1] - 1) > 0.01:   # check if resolution is not ~1:1
         manip_model.initialConfig.setKeepAspectRatio(False)   # stretch frames to square for model input
     manip_mono_hq.out.link(manip_model.inputImage) 
 
@@ -273,6 +298,6 @@ def create_pipeline(base_path, config, config_model, use_webapp_config=False, cr
     xin_ctrl_mono.setStreamName("control_mono")
     xin_ctrl_mono.out.link(cam_mono_left.inputControl)
     
-    sensor_res = {"rgb": (rgb_width, rgb_height), "mono": (target_width, target_height)}
+    sensor_res = {"rgb": (target_width_rgb, target_height_rgb), "mono": (target_width_mono, target_height_mono)}
     
     return pipeline, sensor_res
