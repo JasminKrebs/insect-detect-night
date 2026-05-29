@@ -264,7 +264,7 @@ try:
         q_frame_rgb = device.getOutputQueue(name="frame_rgb", maxSize=4, blocking=False)
         q_frame_mono = device.getOutputQueue(name="frame_mono", maxSize=4, blocking=False)
         q_track = device.getOutputQueue(name="track", maxSize=4, blocking=False)
-        q_model_input = device.getOutputQueue(name="model_input", maxSize=4, blocking=False)  
+        q_model_input = device.getOutputQueue(name="model_input", maxSize=4, blocking=False)
 
         # Write header to metadata .csv file
         metadata_writer = csv.DictWriter(metadata_file, fieldnames=[
@@ -357,22 +357,22 @@ try:
                     if detection_start_time is None:
                         detection_start_time = current_time
                         detection_burst_active = True
-                        detection_burst_end = current_time + 5
-                        #next_detection_capture = current_time  # Allow immediate capture
+                        detection_burst_end = current_time + 8
                         next_detection_capture = current_time if current_time >= last_detection_capture + CAP_INT_DET else last_detection_capture + CAP_INT_DET
+                        #logger.info(f"[DETECTION] Starting new detection burst at {current_time:.2f}")
                         if not led_on:
                             set_led_on(LED_BRIGHTNESS)
                             led_on = True
-                            led_burst_end_time = current_time + 5
+                            led_burst_end_time = current_time + 8
                     elif not detection_burst_active:
                         detection_burst_active = True
-                        detection_burst_end = current_time + 5
-                        #next_detection_capture = current_time
+                        detection_burst_end = current_time + 8
                         next_detection_capture = current_time if current_time >= last_detection_capture + CAP_INT_DET else last_detection_capture + CAP_INT_DET
+                        #logger.info(f"[DETECTION] Reactivating detection burst at {current_time:.2f}")
                         if not led_on:
                             set_led_on(LED_BRIGHTNESS)
                             led_on = True
-                            led_burst_end_time = current_time + 5
+                            led_burst_end_time = current_time + 8
                 else:
                     detection_start_time = None
 
@@ -384,14 +384,15 @@ try:
                         frame_dai = q_frame_rgb.get()
                         last_detection_capture = current_time
                         next_detection_capture = current_time + CAP_INT_DET
-           
+                        #logger.info(f"[DETECTION] Captured RGB full frame at {current_time:.2f}")
+                    
                 # Timelapse: only save at timelapse interval, and only if not in detection burst
                 elif timelapse_due and not detection_burst_active:
                     if q_frame_mono.has():
                         frame_dai = q_frame_mono.get()
                         frame_source = 'mono'
                         last_timelapse_capture = current_time
-                        logger.info(f"[TIMELAPSE] Captured mono frame at {current_time:.2f}")
+                        #logger.info(f"[TIMELAPSE] Captured mono frame at {current_time:.2f}")
                         
                         # Save model input frame only during timelapse
                         if q_model_input.has():
@@ -416,8 +417,10 @@ try:
 
                     # Save frame (burst or timelapse)
                     if frame_source == 'rgb':
+                        logger.info(f"[SAVE] Saving RGB full frame with timestamp {timestamp_str}")
                         executor.submit(save_encoded_frame, save_path, timestamp_str, frame_hq)
                     elif frame_source == 'mono':
+                        logger.info(f"[SAVE] Saving mono frame with timestamp {timestamp_str}_timelapse")
                         executor.submit(save_encoded_frame, save_path, f"{timestamp_str}_timelapse", frame_hq)
 
                     # Save metadata from camera and tracker + model output to .csv file

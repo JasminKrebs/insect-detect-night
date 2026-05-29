@@ -6,20 +6,63 @@ Author:   Maximilian Sittinger (https://github.com/maxsitt)
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 Functions:
+    is_black_image(): Check if an image is completely or nearly black.
     save_encoded_frame(): Save MJPEG-encoded frame to .jpg file.
     archive_data(): Archive all captured data + logs/configs and manage disk space.
     upload_data(): Upload archived data to cloud storage provider.
 """
 
+import io
+import logging
 import shutil
 import subprocess
 from pathlib import Path
 
+import cv2
+import numpy as np
 import psutil
+
+logger = logging.getLogger(__name__)
+
+
+def is_black_image(frame_data, threshold=10, black_percentage=0.99):
+    """Check if an image is completely or nearly black.
+    
+    Args:
+        frame_data: MJPEG-encoded frame data
+        threshold: Pixel values below this are considered black (0-255)
+        black_percentage: Percentage of pixels that must be black for the image to be considered black
+        
+    Returns:
+        bool: True if the image is black, False otherwise
+    """
+    try:
+        # Decode the MJPEG frame
+        img_arr = np.frombuffer(frame_data, dtype=np.uint8)
+        img = cv2.imdecode(img_arr, cv2.IMREAD_GRAYSCALE)
+        
+        if img is None:
+            logger.warning("Failed to decode image when checking for black frame")
+            return False
+        
+        # Calculate the percentage of black pixels
+        total_pixels = img.size
+        black_pixels = np.sum(img < threshold)
+        black_ratio = black_pixels / total_pixels
+        
+        return black_ratio >= black_percentage
+    except Exception as e:
+        logger.warning(f"Error checking for black image: {e}")
+        return False
 
 
 def save_encoded_frame(save_path, timestamp_str, frame):
     """Save MJPEG-encoded frame to .jpg file."""
+    # Check if the image is completely or nearly black
+    #if is_black_image(frame):
+    #    logger.info(f"Ignoring black image: {timestamp_str}.jpg")
+    #    return
+    
     with open(save_path / f"{timestamp_str}.jpg", "wb") as jpg:
         jpg.write(frame)
 
