@@ -1,9 +1,8 @@
 """Save HQ frame from OAK camera + synced metadata from model and tracker if object is detected.
 
-Source:   https://github.com/maxsitt/insect-detect
+Source:   https://github.com/JasminKrebs/insect-detect-night
 License:  GNU GPLv3 (https://choosealicense.com/licenses/gpl-3.0/)
-Author:   Maximilian Sittinger (https://github.com/maxsitt)
-Docs:     https://maxsitt.github.io/insect-detect-docs/
+Author:   Jasmin Krebs (https://github.com/JasminKrebs)
 
 Run this script with the Python interpreter from the virtual environment where you installed the
 required packages, e.g. with 'env_insdet/bin/python3 insect-detect/yolo_tracker_save_hqsync.py'.
