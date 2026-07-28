@@ -51,7 +51,7 @@ rpi_ws281x==5.0.0
 adafruit_blinka==8.62.0
 adafruit_circuitpython_tsl2591==1.4.4
 fastapi==0.116.1
-ruamel.base==1.0.0
+#ruamel.base==1.0.0
 
 # Debian 11 Bullseye (Python 3.9)
 #opencv-python==4.6.0.66
