@@ -1,8 +1,8 @@
-# Required Python packages for the Insect Detect DIY camera trap (Raspberry Pi Zero 2 W + OAK-1)
+# Required Python packages for the Insect Detect Night DIY camera trap (Raspberry Pi Zero 2 W + OAK-1)
 
-# Source:   https://github.com/maxsitt/insect-detect
+# Source:   https://github.com/JasminKrebs/insect-detect-night
 # License:  GNU GPLv3 (https://choosealicense.com/licenses/gpl-3.0/)
-# Author:   Maximilian Sittinger (https://github.com/maxsitt)
+# Author:   Jasmin Krebs (https://github.com/JasminKrebs)
 # Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 # Use Raspberry Pi Imager to set up the microSD card with:
@@ -13,10 +13,10 @@
 # sudo reboot
 
 # Install all required dependencies for RPi + OAK:
-# wget -qO- https://raw.githubusercontent.com/maxsitt/insect-detect/main/install_dependencies_oak.sh | sudo bash
+# wget -qO- https://raw.githubusercontent.com/JasminKrebs/insect-detect-night/main/install_dependencies_oak.sh | sudo bash
 
 # Clone the insect-detect GitHub repo:
-# git clone https://github.com/maxsitt/insect-detect
+# git clone https://github.com/JasminKrebs/insect-detect-night
 
 # Create a virtual environment with access to the system site-packages:
 # python3 -m venv --system-site-packages env_insdet
@@ -25,16 +25,16 @@
 # env_insdet/bin/python3 -m pip install --upgrade pip
 
 # Install all required packages in the virtual environment:
-# env_insdet/bin/python3 -m pip install -r insect-detect/requirements.txt
+# env_insdet/bin/python3 -m pip install -r insect-detect-night/requirements.txt
 
 # Generate self-signed SSL certificates to optionally enable HTTPS for the web app:
-# bash insect-detect/generate_ssl_certificates.sh
+# bash insect-detect-night/generate_ssl_certificates.sh
 
 # Optional: Install and configure Rclone (https://rclone.org/docs/) if you want to use the upload feature:
 # wget -qO- https://rclone.org/install.sh | sudo bash
 
 # Run the scripts with the Python interpreter from the virtual environment:
-# env_insdet/bin/python3 insect-detect/webapp.py
+# env_insdet/bin/python3 insect-detect-night/webapp.py
 
 # Debian 12 Bookworm (Python 3.11)
 depthai==2.30.0.0
