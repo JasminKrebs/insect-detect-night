@@ -1,16 +1,16 @@
 #!/bin/bash
 
-# Install the insect-detect software including dependencies, required packages and all setup steps
+# Install the insect-detect-night software including dependencies, required packages and all setup steps
 
-# Source:   https://github.com/maxsitt/insect-detect
+# Source:   https://github.com/JasminKrebs/insect-detect-night/
 # License:  GNU GPLv3 (https://choosealicense.com/licenses/gpl-3.0/)
-# Author:   Maximilian Sittinger (https://github.com/maxsitt)
+# Author:   Jasmin Krebs (https://github.com/JasminKrebs)
 # Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 # Immediately exit script on error, undefined variable, or pipe failure
 set -euo pipefail
 
-echo "==== Insect Detect Installer ===="
+echo "==== Insect Detect Night Installer ===="
 echo
 
 # Install git
@@ -22,22 +22,22 @@ else
     echo "[1/8] Git is already installed."
 fi
 
-# Clone insect-detect repository
+# Clone insect-detect-night repository
 cd "$HOME"
-if [[ ! -d "insect-detect" ]]; then
+if [[ ! -d "insect-detect-night" ]]; then
     echo
-    echo "[2/8] Cloning 'insect-detect' repository..."
-    if ! git clone https://github.com/maxsitt/insect-detect; then
+    echo "[2/8] Cloning 'insect-detect-night' repository..."
+    if ! git clone https://github.com/JasminKrebs/insect-detect-night/; then
         echo "ERROR: Failed to clone repository. Please retry or check your internet connection."
         exit 1
     fi
 else
     echo
-    echo "[2/8] 'insect-detect' repository already exists."
+    echo "[2/8] 'insect-detect-night' repository already exists."
 fi
 
 # Install dependencies for RPi + OAK
-cd "$HOME/insect-detect"
+cd "$HOME/insect-detect-night"
 echo
 echo "[3/8] Installing dependencies for RPi + OAK..."
 if ! bash install_dependencies_oak.sh; then
@@ -68,7 +68,7 @@ if ! "$HOME/env_insdet/bin/python3" -m pip install --upgrade pip; then
 fi
 
 # Install required packages in the virtual environment
-cd "$HOME/insect-detect"
+cd "$HOME/insect-detect-night"
 echo
 echo "[6/8] Installing required Python packages..."
 if ! "$HOME/env_insdet/bin/python3" -m pip install --upgrade -r requirements.txt; then
@@ -104,8 +104,8 @@ echo
 echo "Installation complete!"
 echo
 echo "Use the web app to configure your custom settings."
-echo "...or modify the 'insect-detect/configs/config_custom.yaml' file directly."
+echo "...or modify the 'insect-detect-night/configs/config_custom.yaml' file directly."
 echo "The startup settings will be active after the next reboot."
 echo
 echo "You can now run the web app with:"
-echo "env_insdet/bin/python3 insect-detect/webapp.py"
+echo "env_insdet/bin/python3 insect-detect-night/webapp.py"
