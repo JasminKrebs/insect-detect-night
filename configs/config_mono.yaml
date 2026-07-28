@@ -52,8 +52,8 @@ camera:
 # Detection settings
 detection:
   model:
-    weights: 250812_yolo11n_416_gray_no_clahe_openvino_2022.1_4shave.blob
-    config: 250812_yolo11n_416_gray_no_clahe_openvino_2022.1_4shave.json
+    weights: 250903_yolo11n_544_epochs200_openvino_2022.1_4shave_gbif_flatbug.blob
+    config: 250903_yolo11n_544_epochs200_openvino_2022.1_4shave_gbif_flatbug.json
   resolution:          # Resolution of downscaled + stretched/cropped LQ frames for model input
     width: 544         # Frame width
     height: 544        # Frame height
