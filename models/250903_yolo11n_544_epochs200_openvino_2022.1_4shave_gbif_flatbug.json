@@ -1,0 +1,23 @@
+{
+    "model": {
+        "blob": "/insect-detect-night/models/250903_yolo11n_544_epochs200_openvino_2022.1_4shave_gbif_flatbug.blob"
+    },
+    "nn_config": {
+        "output_format": "detection",
+        "NN_family": "YOLO",
+        "input_size": "416x416",
+        "NN_specific_metadata": {
+            "classes": 1,
+            "coordinates": 4,
+            "anchors": [],
+            "anchor_masks": {},
+            "iou_threshold": 0.5,
+            "confidence_threshold": 0.5
+        }
+    },
+    "mappings": {
+        "labels": [
+            "insect"
+        ]
+    }
+}
