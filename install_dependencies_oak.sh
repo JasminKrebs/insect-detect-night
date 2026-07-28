@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# Source:      https://github.com/maxsitt/insect-detect (this modified version)
+# Source:      https://github.com/JasminKrebs/insect-detect-night/ (this modified version)
 # Based on:    https://github.com/luxonis/depthai-python/blob/main/docs/install_dependencies.sh (original version)
 # License:     MIT (https://choosealicense.com/licenses/mit/)
-# Modified by: Maximilian Sittinger (https://github.com/maxsitt)
+# Modified by: Jasmin Krebs Sittinger (https://github.com/JasminKrebs)
 # Docs:        https://maxsitt.github.io/insect-detect-docs/
 
 trap 'RET=$? ; echo -e >&2 "\n\x1b[31mFailed installing dependencies. Could be a bug in the installer or unsupported platform. Open a bug report over at https://github.com/luxonis/depthai - exited with status $RET at line $LINENO \x1b[0m\n" ;
