@@ -12,8 +12,32 @@
 # sudo apt update && sudo apt full-upgrade
 # sudo reboot
 
-# Install software & dependencies, clone github repo, :
+# Install software & dependencies, clone github repo:
 # wget -qO- https://raw.githubusercontent.com/JasminKrebs/insect-detect-night/main/insect_detect_install.sh | sudo bash
+
+# To enable LED from startup:
+# sudo nano /etc/systemd/system/led-server.service
+# copy the following there:
+  #[Unit]
+  #Description=LED Server for Insect Detect
+  #After=network.target
+  
+  #[Service]
+  #ExecStart=/home/pi/env_insdet/bin/python3 /home/pi/insect-detect-night/utils/led.py
+  #WorkingDirectory=/home/pi/insect-detect-night/utils
+  #Restart=always
+  #User=root
+  
+  #[Install]
+  #WantedBy=multi-user.target
+
+# then: ctrl+o then enter to save; then ctrl+x to exit
+
+# then:
+  # sudo systemctl daemon-reload
+  # sudo systemctl enable led-server
+  # sudo systemctl start led-server
+# sudo reboot
 
 # Optional: Install and configure Rclone (https://rclone.org/docs/) if you want to use the upload feature:
 # wget -qO- https://rclone.org/install.sh | sudo bash
