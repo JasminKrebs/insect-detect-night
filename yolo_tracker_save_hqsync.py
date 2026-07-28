@@ -386,8 +386,8 @@ try:
                         next_detection_capture = current_time + CAP_INT_DET
                         #logger.info(f"[DETECTION] Captured RGB full frame at {current_time:.2f}")
                     
-                # Timelapse: only save at timelapse interval, and only if not in detection burst
-                elif timelapse_due and not detection_burst_active:
+                # Timelapse: only save at timelapse interval
+                elif timelapse_due:
                     if q_frame_mono.has():
                         frame_dai = q_frame_mono.get()
                         frame_source = 'mono'
