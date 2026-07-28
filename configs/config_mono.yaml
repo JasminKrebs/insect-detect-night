@@ -143,8 +143,8 @@ logging:
 network:
   mode: wifi # Options: hotspot, wifi (automatic fallback to hotspot if no Wi-Fi network is available)
   hotspot:
-    ssid: night-cam05     # SSID of the RPi hotspot (recommended: RPi hostname)
-    password: night-cam05  # Password of the RPi hotspot -> must be at least 8 characters long
+    ssid:      # SSID of the RPi hotspot (recommended: RPi hostname)
+    password:   # Password of the RPi hotspot -> must be at least 8 characters long
   wifi:        # List of Wi-Fi networks (ordered by autoconnect priority)
-    - ssid: JASMIN2748
-      password: 68000<Po
+    - ssid: 
+      password: 
