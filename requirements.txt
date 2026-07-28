@@ -12,8 +12,8 @@
 # sudo apt update && sudo apt full-upgrade
 # sudo reboot
 
-# Install all required dependencies for RPi + OAK:
-# wget -qO- https://raw.githubusercontent.com/JasminKrebs/insect-detect-night/main/install_dependencies_oak.sh | sudo bash
+# Install software and dependencies:
+# wget -qO- https://raw.githubusercontent.com/JasminKrebs/insect-detect-night/main/insect_detect_install.sh | sudo bash
 
 # Clone the insect-detect-night GitHub repo:
 # git clone https://github.com/JasminKrebs/insect-detect-night
