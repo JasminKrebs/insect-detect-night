@@ -12,20 +12,8 @@
 # sudo apt update && sudo apt full-upgrade
 # sudo reboot
 
-# Install software and dependencies and clone github repo:
+# Install software & dependencies, clone github repo, :
 # wget -qO- https://raw.githubusercontent.com/JasminKrebs/insect-detect-night/main/insect_detect_install.sh | sudo bash
-
-# Create a virtual environment with access to the system site-packages:
-# python3 -m venv --system-site-packages env_insdet
-
-# Update pip in the virtual environment:
-# env_insdet/bin/python3 -m pip install --upgrade pip
-
-# Install all required packages in the virtual environment:
-# env_insdet/bin/python3 -m pip install -r insect-detect-night/requirements.txt
-
-# Generate self-signed SSL certificates to optionally enable HTTPS for the web app:
-# bash insect-detect-night/generate_ssl_certificates.sh
 
 # Optional: Install and configure Rclone (https://rclone.org/docs/) if you want to use the upload feature:
 # wget -qO- https://rclone.org/install.sh | sudo bash
@@ -51,7 +39,6 @@ rpi_ws281x==5.0.0
 adafruit_blinka==8.62.0
 adafruit_circuitpython_tsl2591==1.4.4
 fastapi==0.116.1
-#ruamel.base==1.0.0
 
 # Debian 11 Bullseye (Python 3.9)
 #opencv-python==4.6.0.66
