@@ -12,8 +12,16 @@
 # sudo apt update && sudo apt full-upgrade
 # sudo reboot
 
-# Install software & dependencies, clone github repo:
+# Install software & dependencies, clone github repo: -> don't do this
 # wget -qO- https://raw.githubusercontent.com/JasminKrebs/insect-detect-night/main/insect_detect_install.sh | sudo bash
+
+# do instead:
+# nano s.sh
+# then copy all the contents from https://github.com/JasminKrebs/insect-detect-night/blob/main/insect_detect_install.sh
+# save (ctrl+o then enter to save; then ctrl+x to exit)
+# chmod +x s.sh
+# ./s.sh
+# s.sh
 
 # To enable LED from startup:
 # sudo nano /etc/systemd/system/led-server.service
