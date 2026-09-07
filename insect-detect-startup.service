@@ -1,22 +1,20 @@
 [Unit]
 Description=Insect Detect Startup Service
 Documentation=https://maxsitt.github.io/insect-detect-docs/
-Wants=NetworkManager.service
-After=network.target NetworkManager.service led-server.service
-Requires=led-server.service
-Before=multi-user.target
+Wants=network-online.target
+After=network.target network-online.target NetworkManager.service
 
 [Service]
 Type=oneshot
+# Template file: pi username and /home/pi paths are automatically replaced with the
+# actual username and home directory when installing via install.sh or update.sh
 User=pi
 Group=pi
-WorkingDirectory=/home/pi/insect-detect-night
-ExecStart=/home/pi/env_insdet/bin/python3 /home/pi/insect-detect-night/startup.py
-Environment=PYTHONPATH=/home/pi/insect-detect-night
+WorkingDirectory=/home/pi/insect-detect
+ExecStart=/home/pi/.local/bin/uv run startup
 Environment=HOME=/home/pi
 RemainAfterExit=yes
-Restart=no
-TimeoutStartSec=3600
+TimeoutStartSec=600
 TimeoutStopSec=30
 StandardOutput=journal
 StandardError=journal
