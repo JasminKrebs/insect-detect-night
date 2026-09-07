@@ -1,0 +1,14 @@
+[Unit]
+Description=LED Server for Insect Detect
+After=network.target
+
+[Service]
+# Template file: /home/pi paths are automatically replaced with the
+# actual home directory when installing via install.sh or update.sh
+ExecStart=/home/pi/insect-detect/.venv/bin/python3 /home/pi/insect-detect/src/insectdetect/led.py
+WorkingDirectory=/home/pi/insect-detect
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target

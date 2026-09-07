@@ -1,23 +1,25 @@
-import socket
-import struct
+"""LED control service for RGB LED connected to the Raspberry Pi."""
+
 import os
-from rpi_ws281x import PixelStrip, Color
+import socket
 import time
 
-# LED strip configuration
+from rpi_ws281x import Color, PixelStrip
+
+# LED strip configuration.
 LED_COUNT = 12
 LED_PIN = 18
 LED_FREQ_HZ = 800000
 LED_DMA = 10
+LED_BRIGHTNESS = 255
 LED_INVERT = False
 LED_CHANNEL = 0
 
-# Global LED strip object
-led = PixelStrip(LED_COUNT, LED_PIN, LED_FREQ_HZ, LED_DMA, LED_INVERT, LED_CHANNEL)
+led = PixelStrip(LED_COUNT, LED_PIN, LED_FREQ_HZ, LED_DMA, LED_INVERT, LED_BRIGHTNESS, LED_CHANNEL)
 led.begin()
 
 def set_led_on(brightness):
-    """Turn LEDs on (brightness is controlled in webapp.py)."""
+    """Turn LEDs on (brightness is controlled by the caller)."""
     led.setBrightness(int(brightness))
     for i in range(led.numPixels()):
         led.setPixelColor(i, Color(255, 255, 255))
@@ -40,10 +42,8 @@ def set_led_detect(target_brightness, fade_time=1.0):
             led.setPixelColor(i, Color(255, 255, 255))
         led.show()
         time.sleep(delay)
-    time.sleep(2)  # Keep LEDs on at full brightness
-    for i in range(led.numPixels()):
-        led.setPixelColor(i, Color(0, 0, 0))
-    led.show()
+    time.sleep(2)
+    set_led_off()
 
 def set_led_burst(target_brightness, hold_time=5, fade_time=1.0):
     """Fade in LEDs to target brightness, hold for hold_time seconds, then turn off."""
@@ -57,35 +57,36 @@ def set_led_burst(target_brightness, hold_time=5, fade_time=1.0):
         led.show()
         time.sleep(delay)
     time.sleep(hold_time)
-    for i in range(led.numPixels()):
-        led.setPixelColor(i, Color(0, 0, 0))
-    led.show()
+    set_led_off()
 
-# UNIX socket path
-SOCKET_PATH = "/tmp/led.sock"
+def _serve_led_socket():
+    """Start the UNIX datagram socket server for LED commands."""
+    socket_path = "/tmp/led.sock"
 
-# Remove old socket if exists
-if os.path.exists(SOCKET_PATH):
-    os.remove(SOCKET_PATH)
+    if os.path.exists(socket_path):
+        os.remove(socket_path)
 
-sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-sock.bind(SOCKET_PATH)
-os.chmod(SOCKET_PATH, 0o666)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+    sock.bind(socket_path)
+    os.chmod(socket_path, 0o666)
 
-print("LED server started, waiting for commands...")
+    print("LED server started, waiting for commands...")
 
-while True:
-    data, _ = sock.recvfrom(1024)
-    try:
-        cmd, value = data.decode().split(":")
-        value = int(value)
-        if cmd == "on":
-            set_led_on(value)
-        elif cmd == "off":
-            set_led_off()
-        elif cmd == "detect":
-            set_led_detect(value)
-        elif cmd == "burst":
-            set_led_burst(value)
-    except Exception as e:
-        print("Invalid command:", data, e)
+    while True:
+        data, _ = sock.recvfrom(1024)
+        try:
+            cmd, value = data.decode().split(":")
+            value = int(value)
+            if cmd == "on":
+                set_led_on(value)
+            elif cmd == "off":
+                set_led_off()
+            elif cmd == "detect":
+                set_led_detect(value)
+            elif cmd == "burst":
+                set_led_burst(value)
+        except Exception as e:
+            print("Invalid command:", data, e)
+
+if __name__ == "__main__":
+    _serve_led_socket()
