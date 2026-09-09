@@ -264,8 +264,7 @@ def _start_metrics_thread(
 def _run_recording(
     ctx: RecordingContext,
     config: AppConfig,
-    disk_free: int,
-    led: LED | None = None
+    disk_free: int
 ) -> RecordingResult:
     """Run the main recording loop and return a RecordingResult with stop reason flags.
 
@@ -422,6 +421,25 @@ def _run_recording(
                 # Determine whether to capture image based on current time and configured intervals
                 track_active = False
                 current_time = time.monotonic()
+
+                # End detection burst and turn off LED when burst duration ends
+                if detection_burst_active and current_time >= detection_burst_end:
+                    detection_burst_active = False
+                    detection_start_time = None
+                    next_capture = current_time + det_interval
+
+                if led_on and current_time >= led_burst_end:
+                    try:
+                        set_led_off()
+                    except Exception:
+                        pass
+                    led_on = False
+
+                # Update free disk space (MB) at configured interval
+                if current_time >= last_disk_check + disk_check:
+                    result.disk_free = round(psutil.disk_usage("/").free / 1048576)
+                    last_disk_check = current_time
+
                 for track_id, cooldown_until in list(track_cooldowns.items()):
                     if current_time >= cooldown_until:
                         track_cooldowns.pop(track_id, None)
@@ -616,25 +634,6 @@ def _run_recording(
                             #    logger.info(f"[SAVE] Saving RGB full frame with timestamp {timestamp_str}")
                             #elif frame_source == 'mono':
                             #    logger.info(f"[SAVE] Saving mono frame with timestamp {timestamp_str}_timelapse")
-        
-                        # End detection burst and turn off LED after burst end
-                        if detection_burst_active and current_time >= detection_burst_end:
-                            detection_burst_active = False
-                            detection_start_time = None
-                            next_capture = current_time + det_interval
-
-                        # Turn off LED when burst ends
-                        if led_on and current_time >= led_burst_end:
-                            try:
-                                set_led_off()
-                            except Exception:
-                                pass
-                            led_on = False
-
-                        # Update free disk space (MB) at configured interval
-                        if current_time >= last_disk_check + disk_check:
-                            result.disk_free = round(psutil.disk_usage("/").free / 1048576)
-                            last_disk_check = current_time
 
                     # Put latest frame metadata and save future in the queue for the image processing thread
                     if metadata_queue is not None and frame_metadata and save_future is not None:
@@ -832,9 +831,6 @@ def main() -> None:
     disk_free = round(psutil.disk_usage("/").free / 1048576)
     _check_preconditions(config, pwr, disk_free)
 
-    # LED placeholder (we use set_led_on/set_led_off for bursts)
-    led = None
-
     # Determine recording session duration based on battery charge level (or use default)
     session_dur = _get_session_dur(config, pwr)
 
@@ -879,15 +875,16 @@ def main() -> None:
 
     try:
         # Start recording session
-        result = _run_recording(ctx, config, disk_free, led)
+        result = _run_recording(ctx, config, disk_free)
         _archive_and_upload(ctx, result, config)
     except KeyboardInterrupt:
         logger.warning("Recording session %s stopped by Ctrl+C", session_id)
     except Exception:
         logger.exception("Error during initialization of recording session %s", session_id)
     finally:
-        if led:
-            led.off()
+        try:
+            set_led_off()
+        except Exception:
         # Optionally shut down Raspberry Pi after recording session
         if not pwr.external_shutdown.is_set() and config.recording.shutdown.enabled:
             subprocess.run(["sudo", "shutdown", "-h", "now"], check=False)

@@ -260,7 +260,7 @@ def _run_recording(
     ctx: RecordingContext,
     config: AppConfig,
     disk_free: int,
-    led: LED | None = None
+    #led: LED | None = None
 ) -> RecordingResult:
     """Run the main recording loop and return a RecordingResult with stop reason flags.
 
@@ -732,8 +732,8 @@ def main() -> None:
     except Exception:
         logger.exception("Error during initialization of recording session %s", session_id)
     finally:
-        if led:
-            led.off()
+        #if led:
+        #    led.off()
         # Optionally shut down Raspberry Pi after recording session
         if not pwr.external_shutdown.is_set() and config.recording.shutdown.enabled:
             subprocess.run(["sudo", "shutdown", "-h", "now"], check=False)
