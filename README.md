@@ -24,10 +24,10 @@ open source software and can be easily assembled and set up with the
 > Please make sure that you followed [all steps](https://maxsitt.github.io/insect-detect-docs/software/pisetup/)
 > to set up your Raspberry Pi.
 
-Install the `insect-detect` software including all required packages and setup steps:
+Install the `insect-detect-night` software including all required packages and setup steps:
 
 ``` bash
-wget -qO- https://raw.githubusercontent.com/maxsitt/insect-detect/main/install.sh | bash
+wget -qO- https://raw.githubusercontent.com/JasminKrebs/insect-detect-night/main/install.sh | bash
 ```
 
 **Optional:** Install and configure [Rclone](https://rclone.org/docs/) if you want to use the upload feature:
