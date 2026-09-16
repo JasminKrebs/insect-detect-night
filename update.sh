@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Update the insect-detect software while backing up configuration files and handling local changes
+# Update the insect-detect-night software while backing up configuration files and handling local changes
 
-# Source:   https://github.com/maxsitt/insect-detect
+# Source:   https://github.com/JasminKrebs/insect-detect-night
 # License:  GNU GPLv3 (https://choosealicense.com/licenses/gpl-3.0/)
-# Author:   Maximilian Sittinger (https://github.com/maxsitt)
+# Author:   Jasmin Krebs (https://github.com/JasminKrebs)
 # Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 # Immediately exit script on error, undefined variable, or pipe failure
@@ -14,7 +14,7 @@ echo "==== Insect Detect Updater ===="
 echo
 
 # Check prerequisites
-cd "$HOME/insect-detect" || { echo "ERROR: Directory $HOME/insect-detect not found."; exit 1; }
+cd "$HOME/insect-detect-night" || { echo "ERROR: Directory $HOME/insect-detect-night not found."; exit 1; }
 command -v git >/dev/null 2>&1 || { echo "ERROR: Git is required but not installed."; exit 1; }
 command -v uv  >/dev/null 2>&1 || { echo "ERROR: uv is required but not installed."; exit 1; }
 git rev-parse --git-dir >/dev/null 2>&1 || { echo "ERROR: Not in a git repository."; exit 1; }

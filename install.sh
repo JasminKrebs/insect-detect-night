@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Install the insect-detect software including dependencies, required packages and all setup steps
+# Install the insect-detect-night software including dependencies, required packages and all setup steps
 
-# Source:   https://github.com/maxsitt/insect-detect
+# Source:   https://github.com/JasminKrebs/insect-detect-night
 # License:  GNU GPLv3 (https://choosealicense.com/licenses/gpl-3.0/)
-# Author:   Maximilian Sittinger (https://github.com/maxsitt)
+# Author:   Jasmin Krebs (https://github.com/JasminKrebs)
 # Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 # Immediately exit script on error, undefined variable, or pipe failure
@@ -65,22 +65,22 @@ else
     echo "[2/5] uv is already installed."
 fi
 
-# Clone insect-detect repository into the home directory
+# Clone insect-detect-night repository into the home directory
 cd "$HOME"
-if [[ ! -d "insect-detect" ]]; then
+if [[ ! -d "insect-detect-night" ]]; then
     echo
-    echo "[3/5] Cloning 'insect-detect' repository..."
-    if ! git clone https://github.com/maxsitt/insect-detect; then
+    echo "[3/5] Cloning 'insect-detect-night' repository..."
+    if ! git clone https://github.com/JasminKrebs/insect-detect-night; then
         echo "ERROR: Failed to clone repository. Please retry or check your internet connection."
         exit 1
     fi
 else
     echo
-    echo "[3/5] 'insect-detect' repository already exists."
+    echo "[3/5] 'insect-detect-night' repository already exists."
 fi
 
-# All remaining steps are run from the insect-detect repository directory
-cd "$HOME/insect-detect"
+# All remaining steps are run from the insect-detect-night repository directory
+cd "$HOME/insect-detect-night"
 
 # Create virtual environment with access to system site packages (required for GPIO access)
 echo
@@ -170,13 +170,13 @@ echo
 echo "The automatic startup service will be active after the next reboot."
 echo
 echo "Use the web app to configure your custom settings,"
-echo "or modify the 'insect-detect/configs/config.yaml' file directly."
+echo "or modify the 'insect-detect-night/configs/config.yaml' file directly."
 echo
 echo "To make 'uv' available in your current terminal session, run:"
 echo "  source \$HOME/.local/bin/env"
 echo
-echo "To run the scripts manually, first navigate into the insect-detect directory:"
-echo "  cd insect-detect"
+echo "To run the scripts manually, first navigate into the insect-detect-night directory:"
+echo "  cd insect-detect-night"
 echo
 echo "Then run the scripts with:"
 echo "  uv run webapp"
