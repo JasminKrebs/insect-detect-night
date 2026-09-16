@@ -11,11 +11,11 @@ camera:
   mode: mono
   fps: 15
   image:
-    resolution: 4k
+    resolution: 2240p
     quality: 80
   resolution_mono:
-    width: 800
-    height: 448
+    width: 544
+    height: 544
   zoom:
     enabled: false
     factor: 1.0
@@ -41,13 +41,13 @@ camera:
     luma_denoise: 1
     chroma_denoise: 1
 detection:
-  model: platform_insect-detect-tiled_v2-0-0.tar.xz
-  model_night: platform_insect-detect-tiled_v2-0-0.tar.xz
+  model: Insect_Detect_Night.rvc2.tar.xz
+  model_night: Insect_Detect_Night.rvc2.tar.xz
   resolution:
-    width: 800
-    height: 448
+    width: 544
+    height: 544
   num_shaves: 4
-  conf_threshold: 0.3
+  conf_threshold: 0.4
   ae_region:
     enabled: false
 tracking:
@@ -66,7 +66,7 @@ recording:
   interval:
     detection: 2.0
     burst_duration: 5.0
-    timelapse: 5.0
+    timelapse: 60.0
     timelapse_night: 10.0
   shutdown:
     enabled: false
@@ -80,11 +80,11 @@ processing:
     enabled: false
 webapp:
   resolution:
-    width: 800
-    height: 448
+    width: 736
+    height: 720
   resolution_mono:
-    width: 800
-    height: 448
+    width: 544
+    height: 544
   stream:
     quality: 70
   https:
@@ -127,8 +127,8 @@ startup:
     enabled: true
   auto_run:
     enabled: false
-    primary: capture
-    fallback: null
+    primary: webapp
+    fallback: capture_auto
     delay: 180
 night:
   ir_intensity: 0.1
