@@ -1310,7 +1310,8 @@ def create_camera_settings() -> None:
         (ui.label("Resolution").classes("font-bold")
          .tooltip("Resolution preset for captured images and stream. "
                   "Save config and restart to take effect.\n"
-                  "4k: 3840x2160 | 4k-square: 2176x2160 | 1080p: 1920x1080 | 1080p-square: 1088x1080"))
+                  "4k: 3840x2160 | 4k-square: 2176x2160 | 1080p: 1920x1080 | "
+                  "1080p-square: 1088x1080 | 2240p: 2240x2160"))
         (ui.select(list(RESOLUTION_PRESETS.keys()), label="Preset")
          .bind_value(app.state.config_updates["camera"]["image"], "resolution"))
 

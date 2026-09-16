@@ -38,6 +38,7 @@ RESOLUTION_PRESETS: dict[str, tuple[int, int, int, int]] = {
     "4k-square":    (2176, 2160,  960, 960),
     "1080p":        (1920, 1080, 1280, 720),
     "1080p-square": (1088, 1080,  960, 960),
+    "2240p":        (2240, 2160, 736, 720),
 }
 
 # Sensor-space crop dimensions for each resolution preset
@@ -46,6 +47,7 @@ SENSOR_CROP: dict[str, tuple[int, int]] = {
     "4k-square":    (2176, 2160),
     "1080p":        (3840, 2160),
     "1080p-square": (2176, 2160),
+    "2240p":        (2240, 2160),
 }
 
 # Available GPIO pins (BCM numbering) for LED (excluding pins that are used by Witty Pi 4 L3V7)
