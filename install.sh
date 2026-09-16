@@ -10,7 +10,7 @@
 # Immediately exit script on error, undefined variable, or pipe failure
 set -euo pipefail
 
-echo "==== Insect Detect Installer ===="
+echo "==== Insect Detect Night Installer ===="
 echo
 
 # Set environment variable telling OpenBLAS to use ARM Cortex-A53 optimized code paths
