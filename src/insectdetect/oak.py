@@ -201,12 +201,15 @@ def _create_rgb_branch(
     # For square or zoomed presets, set AE/AF region to the sensor-space crop area
     sensor_crop_w, sensor_crop_h = SENSOR_CROP[config.camera.image.resolution]
     is_square_preset = sensor_crop_w < sensor_w or sensor_crop_h < sensor_h
+    # 2240p is cropped from the right (like the mono branch) instead of centered, so both
+    # cameras (different FOV/alignment) keep the same field of view in the overlapping area
+    is_side_crop = config.camera.image.resolution == "2240p"
     if is_square_preset or (config.camera.zoom.enabled and zoom_factor > 1.0):
         scale_to_crop_w = target_w / out_w
         scale_to_crop_h = target_h / out_h
         roi_w = round(sensor_crop_w * scale_to_crop_w)
         roi_h = round(sensor_crop_h * scale_to_crop_h)
-        roi_x = round((sensor_w - roi_w) / 2)
+        roi_x = round(sensor_w - roi_w) if is_side_crop else round((sensor_w - roi_w) / 2)
         roi_y = round((sensor_h - roi_h) / 2)
         sensor_roi = (roi_x, roi_y, roi_w, roi_h)
         cam.initialControl.setAutoExposureRegion(*sensor_roi)
@@ -215,13 +218,32 @@ def _create_rgb_branch(
     else:
         sensor_roi = (1, 1, sensor_crop_w - 2, sensor_crop_h - 2)
 
-    # Request camera output with configured resolution
-    cam_out = cam.requestOutput(
-        size=(out_w, out_h),
-        type=dai.ImgFrame.Type.NV12,
-        resizeMode=dai.ImgResizeMode.CROP,
-        fps=config.camera.fps
-    )
+    if is_side_crop:
+        # Scale sensor output to the target height, then crop the right side to the target
+        # width (instead of a center crop), to match the mono branch's side crop
+        scale = out_h / sensor_h
+        scaled_w = round(sensor_w * scale)
+        cam_out = cam.requestOutput(
+            size=(scaled_w, out_h),
+            type=dai.ImgFrame.Type.NV12,
+            resizeMode=dai.ImgResizeMode.STRETCH,
+            fps=config.camera.fps
+        )
+        side_crop_manip = pipeline.create(dai.node.ImageManip)
+        side_crop_manip.initialConfig.setFrameType(dai.ImgFrame.Type.NV12)
+        side_crop_manip.initialConfig.addCrop(scaled_w - out_w, 0, out_w, out_h)
+        side_crop_manip.setMaxOutputFrameSize(out_w * out_h * 3 // 2)
+        side_crop_manip.inputImage.setBlocking(False)
+        cam_out.link(side_crop_manip.inputImage)
+        cam_out = side_crop_manip.out
+    else:
+        # Request camera output with configured resolution
+        cam_out = cam.requestOutput(
+            size=(out_w, out_h),
+            type=dai.ImgFrame.Type.NV12,
+            resizeMode=dai.ImgResizeMode.CROP,
+            fps=config.camera.fps
+        )
 
     if config.camera.zoom.enabled and zoom_factor > 1.0:
         # Create ImageManip node to crop the center region for zooming

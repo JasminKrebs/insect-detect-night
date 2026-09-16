@@ -88,8 +88,9 @@ class ImageConfig(BaseModel):
       4k-square:    2176x2160 image,  960x960 webapp stream (1:1)
       1080p:        1920x1080 image, 1280x720 webapp stream (16:9)
       1080p-square: 1088x1080 image,  960x960 webapp stream (1:1)
+      2240p:        2240x2160 image,  736x720 webapp stream (~1:1, right-side cropped)
     """
-    resolution: Literal["4k", "4k-square", "1080p", "1080p-square"] = "4k"
+    resolution: Literal["4k", "4k-square", "1080p", "1080p-square", "2240p"] = "4k"
     quality: int = Field(default=80, ge=10, le=100)
 
 
