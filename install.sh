@@ -50,6 +50,12 @@ else
     echo "[1/5] Git is already installed."
 fi
 
+# Install Python development headers (required to build rpi-ws281x from source)
+echo
+echo "Installing Python development headers..."
+sudo apt update
+sudo apt install -y python3-dev
+
 # Install uv package manager (https://docs.astral.sh/uv)
 if ! command -v uv >/dev/null 2>&1; then
     echo
