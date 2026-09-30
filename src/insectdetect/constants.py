@@ -16,7 +16,7 @@ HOSTNAME: str = socket.gethostname()
 UV: Path = Path.home() / ".local" / "bin" / "uv"
 
 # Paths to root directory and subdirectories for data, logs, configs, and models
-BASE_PATH: Path = Path.home() / "insect-detect"
+BASE_PATH: Path = Path.home() / "insect-detect-night"
 DATA_PATH: Path = BASE_PATH / "data"
 LOGS_PATH: Path = BASE_PATH / "logs"
 CONFIGS_PATH: Path = BASE_PATH / "configs"
