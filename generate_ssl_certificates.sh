@@ -13,7 +13,7 @@ set -euo pipefail
 
 DEVICE_HOSTNAME=$(hostname)
 CERT_DAYS=1825  # number of days the certificates are valid (default: 5 years)
-SSL_DIR="$HOME/insect-detect/ssl"
+SSL_DIR="$HOME/insect-detect-night/ssl"
 
 # Create SSL certificates directory
 mkdir -p "$SSL_DIR" || { echo "ERROR: Could not create '$SSL_DIR'."; exit 1; }

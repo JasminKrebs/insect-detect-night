@@ -6,7 +6,7 @@ Author:   Maximilian Sittinger (https://github.com/maxsitt)
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 Usage:
-    Run with 'uv run capture' from the insect-detect directory ('cd insect-detect').
+    Run with 'uv run capture' from the insect-detect-night directory ('cd insect-detect-night').
     Configure settings via 'configs/config.yaml' (select active config in 'config_selector.yaml').
 
 Recording Session Flow:

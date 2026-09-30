@@ -10,7 +10,7 @@ Type=oneshot
 # actual username and home directory when installing via install.sh or update.sh
 User=pi
 Group=pi
-WorkingDirectory=/home/pi/insect-detect
+WorkingDirectory=/home/pi/insect-detect-night
 ExecStart=/home/pi/.local/bin/uv run startup
 Environment=HOME=/home/pi
 RemainAfterExit=yes
