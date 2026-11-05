@@ -173,7 +173,7 @@ def validate_number(
     return True
 
 
-@ui.page("/")
+@ui.page("/", response_timeout=60)  # the camera pipeline upload during page build takes several seconds on RPi
 async def main_page() -> None:
     """Main entry point for the web app."""
     if AUTO_RUN_MARKER.exists() and not STREAMING_MARKER.exists():
@@ -441,8 +441,19 @@ def create_video_stream_container() -> None:
          .bind_text_from(app.state, "visible", lambda vis: f"Sensor Visible: {vis}"))
 
 
+_start_lock = asyncio.Lock()
+
+
 async def start_streaming() -> None:
     """Upload pipeline to OAK device and start the live stream."""
+    # Concurrent page loads must not open the OAK device twice
+    async with _start_lock:
+        if getattr(app.state, "pipeline", None):
+            return
+        await _start_streaming()
+
+
+async def _start_streaming() -> None:
     # Only build the active camera branch (a mode switch restarts the pipeline anyway),
     # this reduces the load and memory use on the OAK device
     active_mode = "mono" if app.state.use_mono else "rgb"
@@ -450,8 +461,9 @@ async def start_streaming() -> None:
 
     (app.state.pipeline, app.state.q_frames_by_mode, app.state.q_tracks_by_mode, app.state.q_syslog,
      app.state.q_camctrl_by_mode, app.state.frame_sizes_by_mode, app.state.nn_input_size,
-     app.state.sensor_rois_by_mode, app.state.labels) = create_pipeline(
-         app.state.config, stream=True, lens_pos=app.state.lens_pos_manual, modes=(active_mode,))
+     app.state.sensor_rois_by_mode, app.state.labels) = await asyncio.to_thread(
+         create_pipeline, app.state.config, stream=True,
+         lens_pos=app.state.lens_pos_manual, modes=(active_mode,))
 
     app.state.q_frames = app.state.q_frames_by_mode[active_mode]
     app.state.q_tracks = app.state.q_tracks_by_mode[active_mode]
@@ -459,7 +471,8 @@ async def start_streaming() -> None:
     app.state.frame_size = app.state.frame_sizes_by_mode[active_mode]
     app.state.sensor_roi = app.state.sensor_rois_by_mode[active_mode]
 
-    app.state.pipeline.start()
+    # Upload the pipeline in a thread to keep the event loop (UI connection) responsive
+    await asyncio.to_thread(app.state.pipeline.start)
     app.state.device = app.state.pipeline.getDefaultDevice()
 
     # Ensure camera starts in continuous auto focus mode if manual focus is not enabled
@@ -502,7 +515,16 @@ async def close_camera() -> None:
         app.state.sys_info_timer.deactivate()
         app.state.sys_info_timer = None
 
+    await stop_streaming_async()
+
+
+async def stop_streaming_async() -> None:
+    """Stop the live stream and close the OAK pipeline in a thread to keep the UI responsive."""
+    pipeline = getattr(app.state, "pipeline", None)
+    app.state.pipeline = None
     stop_streaming()
+    if pipeline:
+        await asyncio.to_thread(stop_pipeline, pipeline)
 
 
 def pause_camera_for_download() -> None:
@@ -526,10 +548,14 @@ async def resume_camera_after_download() -> None:
 
 async def restart_camera() -> None:
     """Restart the camera pipeline after a config-driven mode change."""
-    await close_camera()
+    await stop_streaming_async()
     await asyncio.sleep(0.5)
     init_app_state(reload_config=False)
     await start_streaming()
+
+    # Reconnect the browser to the MJPEG stream of the restarted pipeline
+    if getattr(app.state, "frame_ii", None):
+        app.state.frame_ii.force_reload()
 
 # After camera restart, if mono/manual, re-apply manual settings to camera
 async def apply_manual_camera_settings_if_needed() -> None:
@@ -959,7 +985,8 @@ async def on_camera_mode_change(e):
     raw_value = str(getattr(e, "value", "") or "").strip().lower()
     new_mode = "mono" if raw_value in {"mono", "mono left"} else "rgb"
 
-    if app.state.config_updates["camera"].get("mode") == new_mode:
+    # Compare with the running mode, the select is bound to config_updates and may already hold the new value
+    if getattr(app.state, "pipeline", None) and app.state.use_mono == (new_mode == "mono"):
         return
 
     app.state.config_updates["camera"]["mode"] = new_mode
