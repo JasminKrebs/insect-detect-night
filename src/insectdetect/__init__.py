@@ -7,12 +7,14 @@ Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 Entry Points (via pyproject.toml scripts):
     startup: uv run startup
-    capture: uv run capture
-    webapp:  uv run webapp
+    capture_day:   uv run capture_day
+    capture_night: uv run capture_night
+    webapp:        uv run webapp
 
 Modules:
     startup:     Run configured startup sequence at boot (requires enabled systemd service).
-    capture:     Capture detection-triggered images and save model/tracker metadata from OAK camera.
+    capture_day:   Capture detection-triggered images with the RGB camera (daytime).
+    capture_night: Capture detection-triggered images with mono camera, IR floodlight and LED (night).
     webapp:      Stream OAK camera live feed and configure settings via browser-based web app.
     config:      Classes and functions for configuration file management.
     data:        Utility functions for data management.

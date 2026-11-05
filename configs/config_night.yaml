@@ -21,17 +21,13 @@ camera:
     factor: 1.0
   focus:
     mode: manual
-    type: lens_pos
-    manual:
-      lens_pos: 128
-      distance: 19
     range:
-      lens_pos:
-        min: 154
-        max: 165
-      distance:
-        min: 15
-        max: 20
+      min: 154
+      max: 165
+    compensation:
+      enabled: true
+      coeff: 0.373
+      sweep: false
   exposure:
     mode: manual
     time: 3.2
@@ -92,6 +88,7 @@ webapp:
 network:
   mode: wifi
   hotspot:
+    fallback: true
     ssid: null
     password: null
   wifi:
@@ -119,11 +116,10 @@ storage:
     disk_low: 5000
   upload:
     enabled: false
+    remote: ''
     content: crops
 startup:
-  hotspot_setup:
-    enabled: true
-  network_setup:
+  wifi_sync:
     enabled: true
   auto_run:
     enabled: false

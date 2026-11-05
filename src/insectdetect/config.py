@@ -9,10 +9,10 @@ Functions:
     get_field_constraints(): Extract numeric constraints for a nested field from a Pydantic model.
     load_config_selector(): Load the config selector file and return a validated ConfigSelectorModel.
     load_config_yaml(): Load a YAML config file, clamp out-of-range values and return a validated AppConfig.
-    check_config_changes(): Return True if two configs differ.
+    check_config_changes(): Return True if original and updates represent different configurations.
     update_config_selector(): Update the config selector file to point to a different config file.
-    update_config_yaml(): Merge updates into the active config file, write back and re-validate.
-    sanitize_config(): Return a copy of the config with all passwords masked.
+    update_config_yaml(): Merge updates into a config file, write back and re-validate.
+    sanitize_config(): Return a deep copy of the config with all network passwords masked.
 """
 
 import copy
@@ -24,8 +24,16 @@ from typing import Any, Literal, cast
 import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from insectdetect.constants import (CONFIG_SELECTOR_PATH, CONFIGS_PATH, LED_GPIO_PINS,
-                                    WPA2_PASSWORD_MIN_LENGTH)
+from insectdetect.constants import (
+    CONFIG_SELECTOR_PATH,
+    CONFIGS_PATH,
+    HOSTNAME,
+    LED_GPIO_PINS,
+    LENS_POS_MAX,
+    LENS_POS_MIN,
+    WPA2_PASSWORD_MIN_LENGTH,
+    ContentSelection,
+)
 
 # Initialize logger for this module
 logger = logging.getLogger(__name__)
@@ -111,76 +119,51 @@ class ZoomConfig(BaseModel):
     factor: float = Field(default=1.0, ge=1.0, le=3.0, multiple_of=0.1)
 
 
-class FocusManualConfig(BaseModel):
-    """Fixed lens position for 'manual' focus mode.
+class FocusRangeConfig(BaseModel):
+    """Lens position range to restrict auto focus in 'range' focus mode.
 
-    Two representations of the same position selected by 'focus.type':
-    - lens_pos: OAK lens position value (120-255, higher = closer)
-    - distance: subject distance in cm (8-80), converted to lens_pos
+    Lower lens positions focus farther (LENS_POS_MIN = infinity), higher positions closer
+    (LENS_POS_MAX = 8 cm). The inner bounds keep the range from collapsing at either end.
     """
-    lens_pos: int = Field(default=156, ge=120, le=255)
-    distance: int = Field(default=19, ge=8, le=80)
-
-
-class FocusRangeLensPosConfig(BaseModel):
-    """Lens position range to restrict auto focus in 'range' mode.
-
-    Lens position values: 120 = infinity, 255 = closest focus distance (8 cm).
-    """
-    min: int = Field(default=154, ge=120, le=210)
-    max: int = Field(default=165, ge=122, le=255)
+    min: int = Field(default=154, ge=LENS_POS_MIN, le=210)
+    max: int = Field(default=165, ge=122, le=LENS_POS_MAX)
 
     @model_validator(mode="after")
-    def min_must_be_less_than_max(self) -> "FocusRangeLensPosConfig":
+    def min_must_be_less_than_max(self) -> "FocusRangeConfig":
         """Ensure min lens position is strictly less than max lens position."""
         if self.min >= self.max:
-            raise ValueError(
-                f"focus.range.lens_pos.min ({self.min}) must be less than max ({self.max})"
-            )
+            raise ValueError(f"focus.range.min ({self.min}) must be less than max ({self.max})")
         return self
 
 
-class FocusRangeDistanceConfig(BaseModel):
-    """Subject distance range (in cm) to restrict auto focus in 'range' mode."""
-    min: int = Field(default=15, ge=8, le=75)
-    max: int = Field(default=20, ge=9, le=80)
+class FocusCompensationConfig(BaseModel):
+    """Temperature compensation of the manual focus position ('manual' focus mode only).
 
-    @model_validator(mode="after")
-    def min_must_be_less_than_max(self) -> "FocusRangeDistanceConfig":
-        """Ensure min distance is strictly less than max distance."""
-        if self.min >= self.max:
-            raise ValueError(
-                f"focus.range.distance.min ({self.min}) must be less than max ({self.max})"
-            )
-        return self
-
-
-class FocusRangeConfig(BaseModel):
-    """Auto focus range for 'range' focus mode.
-
-    Two representations of the same ranges selected by 'focus.type':
-    - lens_pos: OAK lens position value (120-255, higher = closer)
-    - distance: subject distance in cm (8-80), converted to lens_pos
+    - enabled: Apply the correction during recording sessions.
+    - coeff:   Lens position correction per degree Celsius.
+    - sweep:   Re-measure the focus position at session start with a bounded focus sweep,
+               to correct slow mechanical drift. Requires a scene with a single dominant
+               focus plane and adds ~70 s per session.
     """
-    lens_pos: FocusRangeLensPosConfig = FocusRangeLensPosConfig()
-    distance: FocusRangeDistanceConfig = FocusRangeDistanceConfig()
+    enabled: bool = True
+    coeff: float = Field(default=0.373, ge=0.0, le=1.0)
+    sweep: bool = False
 
 
 class FocusConfig(BaseModel):
     """Focus settings for the OAK camera.
 
     Modes:
-    - continuous: continuous auto focus (default)
-    - manual:     fixed focus position defined in 'focus.manual'
-    - range:      auto focus restricted to a range defined in 'focus.range'
+    - continuous: continuous auto focus
+    - manual:     fixed lens position, set in the web app and stored in 'manual_focus.json'
+    - range:      auto focus restricted to the lens position range defined in 'focus.range'
 
-    The 'type' field selects whether distances are specified as OAK lens position
-    values ('lens_pos') or in cm ('distance') for 'manual' and 'range' modes.
+    The manual focus position is not part of this file: it is a per-device calibration that
+    must be paired with the chip temperature it was set at, which only the web app can record.
     """
     mode: Literal["continuous", "manual", "range"] = "continuous"
-    type: Literal["lens_pos", "distance"] = "lens_pos"
-    manual: FocusManualConfig = FocusManualConfig()
     range: FocusRangeConfig = FocusRangeConfig()
+    compensation: FocusCompensationConfig = FocusCompensationConfig()
 
 
 class ExposureConfig(BaseModel):
@@ -293,7 +276,7 @@ class CropConfig(BaseModel):
     """Crop individual detections from full images and save as separate files if enabled.
 
     Methods:
-    - square:   crop to a square bounding box - can improve subsequent classification (default)
+    - square:   crop to a square bounding box - can improve subsequent classification
     - original: crop to the original detection bounding box aspect ratio
     """
     enabled: bool = False
@@ -356,9 +339,33 @@ class WebappConfig(BaseModel):
 
 
 class HotspotConfig(BaseModel):
-    """SSID and password for the Raspberry Pi Wi-Fi hotspot."""
+    """Settings for the Raspberry Pi Wi-Fi hotspot.
+
+    - fallback: activate the hotspot if in 'wifi' mode, if no configured Wi-Fi network
+                is in range. Disabling deletes the hotspot profile from NetworkManager.
+    """
+    fallback: bool = True
     ssid: str | None = None
     password: str | None = None
+
+    @field_validator("ssid", "password", mode="before")
+    @classmethod
+    def numeric_to_str(cls, v: object) -> object:
+        """Convert an SSID or password consisting only of digits to a string."""
+        return str(v) if isinstance(v, int) and not isinstance(v, bool) else v
+
+    @property
+    def effective_ssid(self) -> str:
+        """Return the configured hotspot SSID, or the hostname if it is not set."""
+        return self.ssid or HOSTNAME
+
+    @property
+    def effective_password(self) -> str:
+        """Return the configured hotspot password, or the hostname if it is not set.
+
+        Padded with hyphens to meet the WPA2 minimum password length if too short.
+        """
+        return self.password or HOSTNAME.ljust(WPA2_PASSWORD_MIN_LENGTH, "-")
 
     @field_validator("password")
     @classmethod
@@ -378,6 +385,12 @@ class WifiNetwork(BaseModel):
     ssid: str | None = None
     password: str | None = None
 
+    @field_validator("ssid", "password", mode="before")
+    @classmethod
+    def numeric_to_str(cls, v: object) -> object:
+        """Convert an SSID or password consisting only of digits to a string."""
+        return str(v) if isinstance(v, int) and not isinstance(v, bool) else v
+
     @field_validator("password")
     @classmethod
     def password_min_length(cls, v: str | None) -> str | None:
@@ -396,11 +409,16 @@ class NetworkConfig(BaseModel):
 
     Modes:
     - hotspot: start a Raspberry Pi Wi-Fi hotspot for direct device connection
-    - wifi:    connect to one of the configured Wi-Fi networks if available (default)
+    - wifi:    connect to one of the configured Wi-Fi networks if available
     """
     mode: Literal["hotspot", "wifi"] = "wifi"
     hotspot: HotspotConfig = HotspotConfig()
     wifi: list[WifiNetwork] = [WifiNetwork()]
+
+    @property
+    def hotspot_enabled(self) -> bool:
+        """Return True if the hotspot is used as network mode or as Wi-Fi fallback."""
+        return self.mode == "hotspot" or self.hotspot.fallback
 
 
 class PowerManagerConfig(BaseModel):
@@ -464,10 +482,13 @@ class NightConfig(BaseModel):
 class ArchiveConfig(BaseModel):
     """Copy captured data to a separate archive directory if enabled.
 
+    Only the current recording session is archived if not stopped early
+    due to external trigger, low disk space, or low battery charge.
     Detection-triggered, timelapse and overlay frames, as well as crops are
     stored in separate uncompressed zip files. Metadata, log and config files
-    are copied directly. The oldest original data directories are deleted
-    when free disk space drops below the 'disk_low' threshold (in MB).
+    are copied directly. The oldest original date directories are deleted when
+    free disk space drops below the 'disk_low' (MB) threshold, if all of their
+    sessions were previously archived.
     """
     enabled: bool = False
     disk_low: int = Field(default=5000, ge=500, le=50000)
@@ -476,16 +497,40 @@ class ArchiveConfig(BaseModel):
 class UploadConfig(BaseModel):
     """Upload archived data to a remote server or cloud storage via rclone if enabled.
 
-    Archiving is always run before uploading. The 'content' field selects
-    which archived zip files to upload (all options include metadata):
+    Archiving is always run before uploading. Only the current recording session
+    is uploaded if not stopped early due to external trigger, low disk space,
+    or low battery charge.
+
+    The 'remote' field is the rclone destination that the archive directory is
+    uploaded to, written as '<remote>:<path>' with the remote name as defined via
+    'rclone config'. Whether the path has to start with a bucket depends on the
+    backend (see the Rclone setup section in the README for examples). The device
+    ID is always appended, resulting in '<remote>/<device_id>/<date>/<session>'.
+    Uploading is disabled automatically if no remote is configured.
+
+    The 'content' field selects which archived zip files to upload
+    (all options always include metadata, log and config files):
     - all:       upload all data except overlay frames
     - full:      upload only full frame zip files
-    - crops:     upload only cropped detection zip files (default)
+    - crops:     upload only cropped detection zip files
+    - overlays:  upload only overlay frame zip files
     - timelapse: upload only timelapse frame zip files
-    - metadata:  upload only metadata and log files, no images
+    - metadata:  upload only metadata, log and config files, no images
     """
     enabled: bool = False
-    content: Literal["all", "full", "crops", "timelapse", "metadata"] = "crops"
+    remote: str = ""
+    content: ContentSelection = "crops"
+
+    @model_validator(mode="after")
+    def enabled_requires_remote(self) -> "UploadConfig":
+        """Normalize the remote and disable uploading if no remote is configured."""
+        self.remote = self.remote.strip().rstrip("/")
+        if self.enabled and not self.remote:
+            logger.warning(
+                "'storage.upload' was disabled, as 'storage.upload.remote' is not set"
+            )
+            self.enabled = False
+        return self
 
 
 class StorageConfig(BaseModel):
@@ -500,24 +545,16 @@ class StorageConfig(BaseModel):
     upload: UploadConfig = UploadConfig()
 
 
-class HotspotSetupConfig(BaseModel):
-    """Automatically create the Raspberry Pi Wi-Fi hotspot on startup if enabled.
+class WifiSyncConfig(BaseModel):
+    """Create/update NetworkManager profiles for all Wi-Fi networks in the config on startup if enabled.
 
-    The hotspot is only created if it does not already exist in NetworkManager.
-    """
-    enabled: bool = True
-
-
-class NetworkSetupConfig(BaseModel):
-    """Automatically configure all Wi-Fi networks from config in NetworkManager if enabled.
-
-    Existing network profiles are updated and new ones are created as needed.
+    Disable to keep Wi-Fi profiles that were set up outside of the app (e.g. via nmtui) unchanged.
     """
     enabled: bool = True
 
 
 class AutoRunConfig(BaseModel):
-    """Automatically launch a startup script on boot if enabled.
+    """Automatically launch 'capture' or 'webapp' on startup if enabled.
 
     - primary:  application launched immediately on startup
     - fallback: application to launch after 'delay' seconds if 'primary' has not been
@@ -529,8 +566,8 @@ class AutoRunConfig(BaseModel):
                 If 'primary' is 'capture', the full delay always elapses before fallback starts.
     """
     enabled: bool = False
-    primary: Literal["capture", "capture_auto", "webapp"] = "capture"
-    fallback: Literal["capture", "capture_auto", "webapp"] | None = None
+    primary: Literal["capture_day", "capture_night", "capture_auto", "webapp"] = "capture_day"
+    fallback: Literal["capture_day", "capture_night", "capture_auto", "webapp"] | None = None
     delay: int = Field(default=180, ge=10, le=3600)
 
     @model_validator(mode="after")
@@ -546,8 +583,7 @@ class AutoRunConfig(BaseModel):
 
 class StartupConfig(BaseModel):
     """Settings for automatic network setup and application launch on startup."""
-    hotspot_setup: HotspotSetupConfig = HotspotSetupConfig()
-    network_setup: NetworkSetupConfig = NetworkSetupConfig()
+    wifi_sync: WifiSyncConfig = WifiSyncConfig()
     auto_run: AutoRunConfig = AutoRunConfig()
 
 
@@ -723,7 +759,7 @@ def _deep_update(base: dict[str, object], updates: dict[str, object]) -> None:
 
 
 def load_config_selector() -> ConfigSelectorModel:
-    """Load config selector file, validate and return a ConfigSelectorModel.
+    """Load the config selector file and return a validated ConfigSelectorModel.
 
     Raises FileNotFoundError with a list of available config files if
     the referenced config file does not exist in the configs/ directory.
