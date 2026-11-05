@@ -186,5 +186,6 @@ echo "  cd insect-detect-night"
 echo
 echo "Then run the scripts with:"
 echo "  uv run webapp"
-echo "  uv run capture"
+echo "  uv run capture_day"
+echo "  uv run capture_night"
 echo

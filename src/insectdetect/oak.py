@@ -6,50 +6,45 @@ Author:   Maximilian Sittinger (https://github.com/maxsitt)
 Docs:     https://maxsitt.github.io/insect-detect-docs/
 
 Functions:
-    convert_cm_lens_position(): Convert closest available centimeter value to OAK lens position value.
-    deletterbox_bbox():         De-letterbox bounding box from NN-normalized letterboxed space
-                                to frame-normalized space.
-    create_pipeline():          Create and configure depthai pipeline for OAK camera.
+    deletterbox_bbox(): De-letterbox bounding box from NN-normalized letterboxed space
+                        to frame-normalized space.
+    create_pipeline():  Create and configure depthai pipeline (RGB + mono branch) for OAK camera.
+    stop_pipeline():    Stop and close the OAK pipeline/device with a bounded wait.
+    send_camctrl():     Send a camera control command, tolerating a lost OAK connection.
+    get_chip_temp():    Get the current OAK chip temperature.
 """
 
-import json
 import logging
 import math
+import threading
+import time
 from datetime import timedelta
-from pathlib import Path
 from typing import cast
 
 import depthai as dai
 
 from insectdetect.config import AppConfig, get_field_constraints
-from insectdetect.constants import MODELS_PATH, RESOLUTION_PRESETS, SENSOR_CROP, SENSOR_RES
+from insectdetect.constants import (
+    LENS_POS_DEFAULT,
+    MODELS_PATH,
+    RESOLUTION_PRESETS,
+    SENSOR_CROP,
+    SENSOR_RES,
+)
 
 # Initialize logger for this module
 logger = logging.getLogger(__name__)
 
-# Mapping of object-to-camera distances (8-80 cm) to OAK lens position values (255-120)
-CM_LENS_POSITIONS: dict[int, int] = {
-    8: 255, 9: 210, 10: 200, 11: 190, 12: 180, 13: 175, 14: 170, 15: 165, 16: 162, 17: 160,
-    18: 158, 19: 156, 20: 154, 21: 152, 22: 150, 23: 148, 24: 146, 25: 144, 26: 142, 27: 141,
-    28: 140, 29: 139, 30: 138, 31: 137, 32: 136, 34: 135, 36: 134, 38: 133, 40: 132, 42: 131,
-    45: 130, 48: 129, 52: 128, 56: 127, 60: 126, 64: 125, 68: 124, 72: 123, 76: 122, 80: 120,
-}
-CM_KEYS: tuple[int, ...] = tuple(CM_LENS_POSITIONS.keys())
-
-
-def convert_cm_lens_position(distance_cm: int) -> int:
-    """Convert closest available centimeter value to OAK lens position value.
+def _round_even(value: float) -> int:
+    """Round to the nearest even integer.
 
     Args:
-        distance_cm: Object-to-camera distance in centimeters.
+        value: Value to round.
 
     Returns:
-        OAK lens position value (120-255) corresponding to the given distance.
+        Nearest even integer.
     """
-    if distance_cm in CM_KEYS:
-        return CM_LENS_POSITIONS[distance_cm]
-    closest_cm = min(CM_KEYS, key=lambda k: abs(k - distance_cm))
-    return CM_LENS_POSITIONS[closest_cm]
+    return round(value / 2) * 2
 
 
 def _build_zoom_table(
@@ -141,10 +136,25 @@ def deletterbox_bbox(
     )
 
 
+def _log_reconnection_status(status: dai.Device.ReconnectionStatus) -> None:
+    """Log OAK device reconnection status changes reported by depthai's connection monitor.
+
+    Args:
+        status: Current reconnection status reported by depthai.
+    """
+    if status == dai.Device.ReconnectionStatus.RECONNECTED:
+        logger.info("OAK device reconnected successfully")
+    elif status == dai.Device.ReconnectionStatus.RECONNECT_FAILED:
+        logger.error("OAK device reconnection failed, device will be closed")
+    else:
+        logger.warning("OAK device disconnected, attempting to reconnect")
+
+
 def _create_rgb_branch(
     pipeline: dai.Pipeline,
     config: AppConfig,
     stream: bool = False,
+    lens_pos: int | None = None
 ) -> tuple[
     dai.MessageQueue,
     dai.MessageQueue,
@@ -154,12 +164,26 @@ def _create_rgb_branch(
     tuple[int, int, int, int],
     list[str],
 ]:
-    """Build the RGB camera branch and the detection/tracking chain for that branch."""
+    """Build the RGB camera branch and the detection/tracking chain for that branch.
+
+    Args:
+        pipeline: depthai Pipeline to which the branch is added.
+        config:   AppConfig containing all configuration settings.
+        stream:   If True, request ISP output at stream resolution for webapp.py.
+                  If False, request ISP output at HQ resolution for capture.py.
+        lens_pos: Lens position for 'manual' focus mode, from focus.resolve_lens_pos().
+                  Falls back to LENS_POS_DEFAULT if no focus position has been set yet.
+
+    Returns:
+        Tuple of (q_frames, q_tracks, q_camctrl, frame_size, nn_input_size, sensor_roi, labels).
+    """
+    # Get sensor and output resolution, calculate target output resolution based on zoom settings
     sensor_w, sensor_h = SENSOR_RES
     image_w, image_h, stream_w, stream_h = RESOLUTION_PRESETS[config.camera.image.resolution]
     out_w, out_h = (stream_w, stream_h) if stream else (image_w, image_h)
     zoom_factor = config.camera.zoom.factor
-    if config.camera.zoom.enabled and zoom_factor > 1.0:
+    zoom_active = config.camera.zoom.enabled and zoom_factor > 1.0
+    if zoom_active:
         size_key = "stream" if stream else "image"
         target_w, target_h = ZOOM_SIZES[config.camera.image.resolution][size_key][zoom_factor]
     else:
@@ -176,27 +200,15 @@ def _create_rgb_branch(
     cam.initialControl.setChromaDenoise(config.camera.isp.chroma_denoise)
 
     if config.camera.focus.mode == "manual":
-        # Set manual focus using either object-to-camera distance (cm) or lens position (0-255)
+        # Set manual focus to the lens position set in the web app (see focus.resolve_lens_pos)
         cam.initialControl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
-        if config.camera.focus.type == "distance":
-            cam.initialControl.setManualFocus(
-                convert_cm_lens_position(config.camera.focus.manual.distance)
-            )
-        elif config.camera.focus.type == "lens_pos":
-            cam.initialControl.setManualFocus(config.camera.focus.manual.lens_pos)
+        cam.initialControl.setManualFocus(lens_pos if lens_pos is not None else LENS_POS_DEFAULT)
     elif config.camera.focus.mode == "range":
-        # Set auto focus range using either object-to-camera distance (cm) or lens position (0-255)
-        # Note: higher distance -> lower lens position, so min/max are intentionally swapped
-        if config.camera.focus.type == "distance":
-            cam.initialControl.setAutoFocusLensRange(
-                convert_cm_lens_position(config.camera.focus.range.distance.max),
-                convert_cm_lens_position(config.camera.focus.range.distance.min)
-            )
-        elif config.camera.focus.type == "lens_pos":
-            cam.initialControl.setAutoFocusLensRange(
-                config.camera.focus.range.lens_pos.min,
-                config.camera.focus.range.lens_pos.max,
-            )
+        # Restrict auto focus to the configured lens position range
+        cam.initialControl.setAutoFocusLensRange(
+            config.camera.focus.range.min,
+            config.camera.focus.range.max
+        )
 
     # For square or zoomed presets, set AE/AF region to the sensor-space crop area
     sensor_crop_w, sensor_crop_h = SENSOR_CROP[config.camera.image.resolution]
@@ -204,7 +216,7 @@ def _create_rgb_branch(
     # 2240p is cropped from the right (like the mono branch) instead of centered, so both
     # cameras (different FOV/alignment) keep the same field of view in the overlapping area
     is_side_crop = config.camera.image.resolution == "2240p"
-    if is_square_preset or (config.camera.zoom.enabled and zoom_factor > 1.0):
+    if is_square_preset or zoom_active:
         scale_to_crop_w = target_w / out_w
         scale_to_crop_h = target_h / out_h
         roi_w = round(sensor_crop_w * scale_to_crop_w)
@@ -218,114 +230,159 @@ def _create_rgb_branch(
     else:
         sensor_roi = (1, 1, sensor_crop_w - 2, sensor_crop_h - 2)
 
-    if is_side_crop:
-        # Scale sensor output to the target height, then crop the right side to the target
-        # width (instead of a center crop), to match the mono branch's side crop
-        scale = out_h / sensor_h
-        scaled_w = round(sensor_w * scale)
-        cam_out = cam.requestOutput(
-            size=(scaled_w, out_h),
-            type=dai.ImgFrame.Type.NV12,
-            resizeMode=dai.ImgResizeMode.STRETCH,
-            fps=config.camera.fps
-        )
-        side_crop_manip = pipeline.create(dai.node.ImageManip)
-        side_crop_manip.initialConfig.setFrameType(dai.ImgFrame.Type.NV12)
-        side_crop_manip.initialConfig.addCrop(scaled_w - out_w, 0, out_w, out_h)
-        side_crop_manip.setMaxOutputFrameSize(out_w * out_h * 3 // 2)
-        side_crop_manip.inputImage.setBlocking(False)
-        cam_out.link(side_crop_manip.inputImage)
-        cam_out = side_crop_manip.out
-    else:
-        # Request camera output with configured resolution
-        cam_out = cam.requestOutput(
-            size=(out_w, out_h),
-            type=dai.ImgFrame.Type.NV12,
-            resizeMode=dai.ImgResizeMode.CROP,
-            fps=config.camera.fps
-        )
-
-    if config.camera.zoom.enabled and zoom_factor > 1.0:
-        # Create ImageManip node to crop the center region for zooming
-        crop_x = (out_w - target_w) // 2
-        crop_y = (out_h - target_h) // 2
-        zoom_manip = pipeline.create(dai.node.ImageManip)
-        zoom_manip.initialConfig.setFrameType(dai.ImgFrame.Type.NV12)
-        zoom_manip.initialConfig.addCrop(crop_x, crop_y, target_w, target_h)
-        zoom_manip.setMaxOutputFrameSize(target_w * target_h * 3 // 2)
-        zoom_manip.inputImage.setBlocking(False)
-        cam_out.link(zoom_manip.inputImage)
-        cam_frames = zoom_manip.out
-    else:
-        cam_frames = cam_out
-
-    # Create VideoEncoder node for MJPEG-encoding of RGB HQ frames
-    encoder = pipeline.create(dai.node.VideoEncoder).build(
-        input=cam_frames,
-        frameRate=1,
-        profile=dai.VideoEncoderProperties.Profile.MJPEG,
-        quality=config.webapp.stream.quality if stream else config.camera.image.quality
-    )
-    q_camctrl = cam.inputControl.createInputQueue(maxSize=1, blocking=False)
-
     # Load the specified detection model from the models directory and get input size and type
     nn_archive = dai.NNArchive(MODELS_PATH / config.detection.model)
     nn_input_size = nn_archive.getInputSize()
-    if nn_input_size is None:
-        raise ValueError(f"Could not retrieve input size from NN archive: {config.detection.model}")
     nn_input_type_str = nn_archive.getConfig().model.inputs[0].preprocessing.daiType or "BGR888p"
     nn_input_type = cast("dai.ImgFrame.Type", getattr(dai.ImgFrame.Type, nn_input_type_str))
-
+    if nn_input_size is None:
+        raise ValueError(f"Could not retrieve input size from NN archive: {config.detection.model}")
     frame_aspect = target_w / target_h
     nn_aspect = nn_input_size[0] / nn_input_size[1]
     aspect_diff = abs(frame_aspect - nn_aspect)
     if aspect_diff > 0.1:
         logger.warning(
             "Aspect ratio mismatch between frame size (%dx%d) and NN input size (%dx%d). "
-            "Letterboxing will add %.1f%% padding.",
-            target_w,
-            target_h,
-            nn_input_size[0],
-            nn_input_size[1],
-            aspect_diff / max(frame_aspect, nn_aspect) * 100,
+            "Letterboxing will add %.1f%% padding.", target_w, target_h,
+            nn_input_size[0], nn_input_size[1], aspect_diff / max(frame_aspect, nn_aspect) * 100
         )
 
+    # Calculate scale factor and pixel dimensions for the model input frames
+    nn_fit_scale = min(nn_input_size[0] / target_w, nn_input_size[1] / target_h)
+    nn_target_w = _round_even(target_w * nn_fit_scale)
+    nn_target_h = _round_even(target_h * nn_fit_scale)
+    nn_out_w = _round_even(out_w * nn_fit_scale)
+    nn_out_h = _round_even(out_h * nn_fit_scale)
+
+    # Increase frame pool counts and max sizes to avoid frame drops or pipeline freezes
+    raw_frame_size = sensor_w * sensor_h * 5 // 4  # RAW10-packed, ~1.25 bytes/pixel
+    isp_frame_size = sensor_w * sensor_h * 3 // 2  # YUV420 planar, ~1.5 bytes/pixel
+    hq_frame_size = out_w * out_h * 3 // 2         # NV12, ~1.5 bytes/pixel
+    nn_frame_size = max(nn_target_w * nn_target_h, nn_out_w * nn_out_h) * 3  # BGR, ~3 bytes/pixel
+    out_frame_size = max(hq_frame_size, nn_frame_size)
+    cam.setNumFramesPools(4, 4, 4)
+    cam.setMaxSizePools(raw_frame_size * 4, isp_frame_size * 4, out_frame_size * 4)
+
+    # Create throttled cam output for HQ frames if not in stream mode and capture interval is > 0
+    # (not for the side-crop preset, where the model input is derived from the HQ frames)
+    det_interval = config.recording.interval.detection
+    tl_interval = config.recording.interval.timelapse
+    if not stream and not is_side_crop and det_interval > 0 and tl_interval > 0:
+        cam_out_hq_fps = min(config.camera.fps, max(1, round(2 / min(det_interval, tl_interval))))
+    else:
+        cam_out_hq_fps = config.camera.fps
+
+    if is_side_crop:
+        # Scale sensor output to the target height, then crop the right side to the target
+        # width (instead of a center crop), to match the mono branch's side crop
+        scaled_w = round(sensor_w * out_h / sensor_h)
+        cam_out_scaled = cam.requestOutput(
+            size=(scaled_w, out_h),
+            type=dai.ImgFrame.Type.NV12,
+            resizeMode=dai.ImgResizeMode.STRETCH,
+            fps=cam_out_hq_fps
+        )
+        side_crop_manip = pipeline.create(dai.node.ImageManip)
+        side_crop_manip.initialConfig.setFrameType(dai.ImgFrame.Type.NV12)
+        side_crop_manip.initialConfig.addCrop(scaled_w - out_w, 0, out_w, out_h)
+        side_crop_manip.setMaxOutputFrameSize(out_w * out_h * 3 // 2)
+        side_crop_manip.inputImage.setBlocking(False)
+        cam_out_scaled.link(side_crop_manip.inputImage)
+        cam_out_hq = side_crop_manip.out
+    else:
+        cam_out_hq = cam.requestOutput(
+            size=(out_w, out_h),
+            type=dai.ImgFrame.Type.NV12,
+            resizeMode=dai.ImgResizeMode.CROP,
+            fps=cam_out_hq_fps
+        )
+
+    if zoom_active:
+        # Create ImageManip node to crop the center region for lossless digital zoom
+        zoom_manip = pipeline.create(dai.node.ImageManip)
+        zoom_manip.setMaxOutputFrameSize(target_w * target_h * 3 // 2)
+        zoom_manip.inputImage.setBlocking(False)
+        crop_x = (out_w - target_w) // 2
+        crop_y = (out_h - target_h) // 2
+        zoom_manip.initialConfig.addCrop(crop_x, crop_y, target_w, target_h)
+        cam_out_hq.link(zoom_manip.inputImage)
+        cam_frames_hq = zoom_manip.out
+    else:
+        cam_frames_hq = cam_out_hq
+
+    # Create VideoEncoder node for MJPEG-encoding of HQ frames
+    encoder = pipeline.create(dai.node.VideoEncoder).build(
+        input=cam_frames_hq,
+        frameRate=1,
+        profile=dai.VideoEncoderProperties.Profile.MJPEG,
+        quality=config.webapp.stream.quality if stream else config.camera.image.quality
+    )
+    encoder.input.setBlocking(False)
+
+    # Create downscaled cam output for model input frames at full camera fps
+    # (side-crop preset: reuse the HQ frames so the model sees the identical field of view)
+    if is_side_crop:
+        cam_frames_nn = cam_frames_hq
+    else:
+        cam_out_nn = cam.requestOutput(
+            size=(nn_out_w, nn_out_h) if zoom_active else (nn_target_w, nn_target_h),
+            type=nn_input_type,
+            resizeMode=dai.ImgResizeMode.CROP,
+            fps=config.camera.fps
+        )
+
+        if zoom_active:
+            # Create ImageManip node to crop the center region for lossless digital zoom (model input)
+            nn_zoom_manip = pipeline.create(dai.node.ImageManip)
+            nn_zoom_manip.setMaxOutputFrameSize(nn_target_w * nn_target_h * 3)
+            nn_zoom_manip.inputImage.setBlocking(False)
+            nn_zoom_manip.inputImage.setMaxSize(1)
+            nn_crop_x = (nn_out_w - nn_target_w) // 2
+            nn_crop_y = (nn_out_h - nn_target_h) // 2
+            nn_zoom_manip.initialConfig.addCrop(nn_crop_x, nn_crop_y, nn_target_w, nn_target_h)
+            cam_out_nn.link(nn_zoom_manip.inputImage)
+            cam_frames_nn = nn_zoom_manip.out
+        else:
+            cam_frames_nn = cam_out_nn
+
+    # Create ImageManip node to letterbox-resize to the model input size
     nn_manip = pipeline.create(dai.node.ImageManip)
     nn_manip.initialConfig.setFrameType(nn_input_type)
-    nn_manip.initialConfig.setOutputSize(
-        nn_input_size[0], nn_input_size[1], dai.ImageManipConfig.ResizeMode.LETTERBOX
-    )
     nn_manip.setMaxOutputFrameSize(nn_input_size[0] * nn_input_size[1] * 3)
     nn_manip.inputImage.setBlocking(False)
-    cam_frames.link(nn_manip.inputImage)
+    nn_manip.inputImage.setMaxSize(1)
+    nn_manip.initialConfig.setOutputSize(nn_input_size[0], nn_input_size[1],
+                                         dai.ImageManipConfig.ResizeMode.LETTERBOX)
+    cam_frames_nn.link(nn_manip.inputImage)
 
     # Create and configure DetectionNetwork node
-    nn_det = pipeline.create(dai.node.DetectionNetwork).build(
-        input=nn_manip.out,
-        nnArchive=nn_archive,
-    )
+    nn_det = pipeline.create(dai.node.DetectionNetwork)
     nn_det.setNNArchive(nn_archive, numShaves=config.detection.num_shaves)  # type: ignore[call-arg]
     nn_det.setConfidenceThreshold(config.detection.conf_threshold)
     nn_det.setNumInferenceThreads(2)
     nn_det.input.setBlocking(False)
+    nn_det.input.setMaxSize(1)
+    nn_manip.out.link(nn_det.input)
     labels = nn_det.getClasses()
     if labels is None:
         raise ValueError(f"Could not retrieve class labels from NN archive: {config.detection.model}")
 
     # Create and configure ObjectTracker node
     tracker = pipeline.create(dai.node.ObjectTracker)
-    tracker.setTrackerType(dai.TrackerType.SHORT_TERM_IMAGELESS)
+    tracker.setTrackerType(getattr(dai.TrackerType, config.tracking.type))
     tracker.setTrackerIdAssignmentPolicy(dai.TrackerIdAssignmentPolicy.UNIQUE_ID)
-    tracker.setOcclusionRatioThreshold(0.5)
-    tracker.setTrackletBirthThreshold(20)
-    tracker.setTrackletMaxLifespan(300)
+    tracker.setOcclusionRatioThreshold(config.tracking.occlusion_ratio_threshold)
+    tracker.setTrackletBirthThreshold(config.tracking.tracklet_birth_threshold)
+    tracker.setTrackletMaxLifespan(config.tracking.tracklet_max_lifespan)
     nn_det.passthrough.link(tracker.inputTrackerFrame)
     nn_det.passthrough.link(tracker.inputDetectionFrame)
     nn_det.out.link(tracker.inputDetections)
 
-    # Create Sync node to synchronize HQ frames with tracker output
+    # Create and configure Sync node to synchronize HQ frames with tracker output
     sync = pipeline.create(dai.node.Sync)
-    sync.setSyncThreshold(timedelta(milliseconds=100))
+    sync.setSyncThreshold(timedelta(milliseconds=50))
+    sync.setSyncAttempts(20)
+    sync.inputs["tracks"].setMaxSize(40)
     encoder.bitstream.link(sync.inputs["frames"])
     tracker.out.link(sync.inputs["tracks"])
 
@@ -334,6 +391,9 @@ def _create_rgb_branch(
     sync.out.link(demux.input)
     q_frames = demux.outputs["frames"].createOutputQueue(maxSize=2, blocking=False)
     q_tracks = demux.outputs["tracks"].createOutputQueue(maxSize=2, blocking=False)
+
+    # Create input queue to send camera control commands (e.g. AE region, focus control)
+    q_camctrl = cam.inputControl.createInputQueue(maxSize=1, blocking=False)
 
     return q_frames, q_tracks, q_camctrl, (target_w, target_h), nn_input_size, sensor_roi, labels
 
@@ -351,19 +411,35 @@ def _create_mono_branch(
     tuple[int, int, int, int],
     list[str],
 ]:
-    """Build the mono camera branch and its tracking pipeline."""
+    """Build the mono camera branch (night mode) and its detection/tracking chain.
+
+    Args:
+        pipeline: depthai Pipeline to which the branch is added.
+        config:   AppConfig containing all configuration settings.
+        stream:   If True, use the web app stream resolution, otherwise the capture resolution.
+
+    Returns:
+        Tuple of (q_frames, q_tracks, q_camctrl, frame_size, nn_input_size, sensor_roi, labels).
+    """
     mono_resolution_cfg = config.webapp.resolution_mono if stream else config.camera.resolution_mono
     target_w, target_h = mono_resolution_cfg.width, mono_resolution_cfg.height
     cam = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_B)
 
     if target_w <= 640 and target_h <= 400:
-        mono_out = cam.requestOutput((640, 400), type=dai.ImgFrame.Type.YUV400p, fps=config.camera.fps)
-        mono_sensor_width, mono_sensor_height = 640, 400
+        mono_w, mono_h = 640, 400
     else:
-        mono_out = cam.requestOutput((1280, 720), type=dai.ImgFrame.Type.YUV400p, fps=config.camera.fps)
-        mono_sensor_width, mono_sensor_height = 1280, 720
+        mono_w, mono_h = 1280, 720
 
-    #mono_sensor_width, mono_sensor_height = cam_mono.getMaxWidth(), cam_mono.getMaxHeight() #cam.getResolutionSize()
+    # Increase frame pool counts and max sizes to avoid frame drops or pipeline freezes
+    # (sensor-sized pools use the max mono sensor resolution of 1280x800 as upper bound)
+    raw_frame_size = 1280 * 800 * 5 // 4  # RAW10-packed, ~1.25 bytes/pixel
+    isp_frame_size = 1280 * 800           # GRAY8, ~1 byte/pixel
+    out_frame_size = mono_w * mono_h      # YUV400p, ~1 byte/pixel
+    cam.setNumFramesPools(4, 4, 4)
+    cam.setMaxSizePools(raw_frame_size * 4, isp_frame_size * 4, out_frame_size * 4)
+
+    mono_out = cam.requestOutput((mono_w, mono_h), type=dai.ImgFrame.Type.YUV400p, fps=config.camera.fps)
+    mono_sensor_width, mono_sensor_height = mono_w, mono_h
 
     cam.initialControl.setSharpness(config.camera.isp.sharpness)
     cam.initialControl.setLumaDenoise(config.camera.isp.luma_denoise)
@@ -381,11 +457,13 @@ def _create_mono_branch(
     crop_y = (mono_sensor_height - target_h) // 2
     manip_mono_hq.initialConfig.addCrop(crop_x, crop_y, target_w, target_h)
     manip_mono_hq.setMaxOutputFrameSize(3 * target_w * target_h)
+    manip_mono_hq.inputImage.setBlocking(False)
     mono_out.link(manip_mono_hq.inputImage)
 
     encoder = pipeline.create(dai.node.VideoEncoder)
     encoder.setDefaultProfilePreset(1, dai.VideoEncoderProperties.Profile.MJPEG)
     encoder.setQuality(config.webapp.stream.quality if stream else config.camera.image.quality)
+    encoder.input.setBlocking(False)
     manip_mono_hq.out.link(encoder.input)
 
     sensor_roi = (
@@ -420,17 +498,17 @@ def _create_mono_branch(
                                          dai.ImageManipConfig.ResizeMode.LETTERBOX)
     nn_manip.setMaxOutputFrameSize(nn_input_size[0] * nn_input_size[1] * 3)
     nn_manip.inputImage.setBlocking(False)
+    nn_manip.inputImage.setMaxSize(1)
     manip_mono_hq.out.link(nn_manip.inputImage)
 
     # Create and configure DetectionNetwork node
-    nn_det = pipeline.create(dai.node.DetectionNetwork).build(
-        input=nn_manip.out,
-        nnArchive=nn_archive
-    )
+    nn_det = pipeline.create(dai.node.DetectionNetwork)
     nn_det.setNNArchive(nn_archive, numShaves=config.detection.num_shaves)  # type: ignore[call-arg]
     nn_det.setConfidenceThreshold(config.detection.conf_threshold)
     nn_det.setNumInferenceThreads(2)
     nn_det.input.setBlocking(False)
+    nn_det.input.setMaxSize(1)
+    nn_manip.out.link(nn_det.input)
     labels = nn_det.getClasses()
     if labels is None:
         raise ValueError(f"Could not retrieve class labels from NN archive: {config.detection.model}")
@@ -446,9 +524,11 @@ def _create_mono_branch(
     nn_det.passthrough.link(tracker.inputDetectionFrame)
     nn_det.out.link(tracker.inputDetections)
 
-    # Create Sync node to synchronize HQ frames with tracker output
+    # Create and configure Sync node to synchronize HQ frames with tracker output
     sync = pipeline.create(dai.node.Sync)
-    sync.setSyncThreshold(timedelta(milliseconds=100))
+    sync.setSyncThreshold(timedelta(milliseconds=50))
+    sync.setSyncAttempts(20)
+    sync.inputs["tracks"].setMaxSize(40)
     encoder.bitstream.link(sync.inputs["frames"])
     tracker.out.link(sync.inputs["tracks"])
 
@@ -466,6 +546,8 @@ def _create_mono_branch(
 def create_pipeline(
     config: AppConfig,
     stream: bool = False,
+    lens_pos: int | None = None,
+    modes: tuple[str, ...] = ("rgb", "mono")
 ) -> tuple[
     dai.Pipeline,
     dict[str, dai.MessageQueue],
@@ -477,44 +559,136 @@ def create_pipeline(
     dict[str, tuple[int, int, int, int]],
     list[str],
 ]:
-    """Create both RGB and mono branches in a single pipeline.
+    """Create and configure depthai pipeline with the RGB and/or the mono branch.
 
-    The selected camera mode controls which branch is used for detection/tracking,
-    while both streams remain available for preview switching and simultaneous
-    recording in night mode.
+    The selected camera mode ('config.camera.mode') controls which branch is used for the
+    returned NN input size and labels. By default both branches are built, so they remain
+    available for preview switching and simultaneous recording in night mode.
+
+    Args:
+        config:   AppConfig containing all configuration settings.
+        stream:   If True, request output at stream resolution for webapp.py.
+                  If False, request output at HQ resolution for capture.py.
+        lens_pos: Lens position for 'manual' focus mode (RGB branch), from focus.resolve_lens_pos().
+                  Falls back to LENS_POS_DEFAULT if no focus position has been set yet.
+        modes:    Branches to build ('rgb', 'mono'). Building only the active branch (web app)
+                  reduces the load and memory use on the OAK device.
+
+    Returns:
+        Tuple of (pipeline, q_frames_by_mode, q_tracks_by_mode, q_syslog, q_camctrl_by_mode,
+                  frame_sizes_by_mode, nn_input_size, sensor_rois_by_mode, labels),
+        where the '_by_mode' dicts are keyed by the built branches ('rgb' and/or 'mono').
     """
-    pipeline = dai.Pipeline()
+    # Force USB2 mode and add custom callback to device reconnection attempts
+    device = dai.Device(maxUsbSpeed=dai.UsbSpeed.HIGH)
+    device.setMaxReconnectionAttempts(3, _log_reconnection_status)
+    pipeline = dai.Pipeline(device)
+
     active_mode = getattr(config.camera, "mode", "rgb")
+    if active_mode not in modes:
+        raise ValueError(f"Active camera mode '{active_mode}' is not part of the built modes {modes}")
 
-    q_frames_rgb, q_tracks_rgb, q_camctrl_rgb, frame_size_rgb, nn_input_size_rgb, sensor_roi_rgb, labels_rgb = _create_rgb_branch(
-        pipeline, config, stream
-    )
-    q_frames_mono, q_tracks_mono, q_camctrl_mono, frame_size_mono, nn_input_size_mono, sensor_roi_mono, labels_mono = _create_mono_branch(
-        pipeline, config, stream
-    )
+    q_frames: dict[str, dai.MessageQueue] = {}
+    q_tracks: dict[str, dai.MessageQueue] = {}
+    q_camctrl: dict[str, dai.InputQueue] = {}
+    frame_sizes: dict[str, tuple[int, int]] = {}
+    nn_input_sizes: dict[str, tuple[int, int]] = {}
+    sensor_rois: dict[str, tuple[int, int, int, int]] = {}
+    labels_by_mode: dict[str, list[str]] = {}
 
-    active_labels = labels_rgb if active_mode == "rgb" else labels_mono
-    active_nn_input_size = nn_input_size_rgb if active_mode == "rgb" else nn_input_size_mono
+    if "rgb" in modes:
+        (q_frames["rgb"], q_tracks["rgb"], q_camctrl["rgb"], frame_sizes["rgb"],
+         nn_input_sizes["rgb"], sensor_rois["rgb"], labels_by_mode["rgb"]) = _create_rgb_branch(
+            pipeline, config, stream, lens_pos
+        )
+    if "mono" in modes:
+        (q_frames["mono"], q_tracks["mono"], q_camctrl["mono"], frame_sizes["mono"],
+         nn_input_sizes["mono"], sensor_rois["mono"], labels_by_mode["mono"]) = _create_mono_branch(
+            pipeline, config, stream
+        )
 
-    q_frames_by_mode = {"rgb": q_frames_rgb, "mono": q_frames_mono}
-    q_tracks_by_mode = {"rgb": q_tracks_rgb, "mono": q_tracks_mono}
-    q_camctrl_by_mode = {"rgb": q_camctrl_rgb, "mono": q_camctrl_mono}
-    frame_sizes_by_mode = {"rgb": frame_size_rgb, "mono": frame_size_mono}
-    sensor_rois_by_mode = {"rgb": sensor_roi_rgb, "mono": sensor_roi_mono}
-
-    # Single shared SystemLogger for the whole device (not per-branch)
+    # Single shared SystemLogger for the whole device (not per branch)
     syslog = pipeline.create(dai.node.SystemLogger)
     syslog.setRate(1)
     q_syslog = syslog.out.createOutputQueue(maxSize=2, blocking=False)
 
     return (
         pipeline,
-        q_frames_by_mode,
-        q_tracks_by_mode,
+        q_frames,
+        q_tracks,
         q_syslog,
-        q_camctrl_by_mode,
-        frame_sizes_by_mode,
-        active_nn_input_size,
-        sensor_rois_by_mode,
-        active_labels,
+        q_camctrl,
+        frame_sizes,
+        nn_input_sizes[active_mode],
+        sensor_rois,
+        labels_by_mode[active_mode],
     )
+
+
+def stop_pipeline(pipeline: dai.Pipeline) -> None:
+    """Stop and close the OAK pipeline/device, with a bounded wait.
+
+    depthai's internal reconnection monitor thread can race with an explicit close() call if
+    a USB disconnect/reconnect is in progress at the same time, occasionally blocking close()
+    indefinitely. Running the close in a background thread and waiting at most 10 seconds
+    ensures the caller always regains control even if depthai's own close never returns.
+
+    Args:
+        pipeline: The depthai Pipeline to stop.
+    """
+    closed = threading.Event()
+
+    def _stop() -> None:
+        try:
+            pipeline.stop()
+            pipeline.wait()
+        except Exception:
+            logger.exception("Error while stopping OAK pipeline")
+        finally:
+            closed.set()
+
+    threading.Thread(target=_stop, name="OAKPipelineStopper", daemon=True).start()
+    if not closed.wait(timeout=10.0):
+        logger.warning("OAK pipeline did not stop within 10 seconds")
+
+
+def send_camctrl(q_camctrl: dai.InputQueue, ctrl: dai.CameraControl) -> None:
+    """Send a camera control command, tolerating a lost OAK connection.
+
+    Args:
+        q_camctrl: depthai input queue for CameraControl messages.
+        ctrl:      CameraControl message to send.
+    """
+    try:
+        q_camctrl.send(ctrl)
+    except Exception:
+        logger.exception("Could not send camera control command")
+
+
+def get_chip_temp(
+    q_syslog: dai.MessageQueue,
+    fallback: float | None = None,
+    wait_s: float = 0.0
+) -> float | None:
+    """Get the current OAK chip temperature.
+
+    Args:
+        q_syslog: depthai output queue for SystemInformation messages.
+        fallback: Value returned if no new SystemInformation message is available.
+        wait_s:   Seconds to keep polling for a message.
+
+    Returns:
+        Average chip temperature in degrees Celsius, or the fallback value.
+    """
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            sysinfo = cast(dai.SystemInformation | None, q_syslog.tryGet())
+        except Exception:
+            logger.exception("Error getting system information from q_syslog")
+            return fallback
+        if sysinfo is not None:
+            return float(sysinfo.chipTemperature.average)
+        if time.monotonic() >= deadline:
+            return fallback
+        time.sleep(0.05)

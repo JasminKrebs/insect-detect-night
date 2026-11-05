@@ -56,7 +56,8 @@ from insectdetect.config import AppConfig, load_config_selector, load_config_yam
 from insectdetect.constants import CONFIGS_PATH, DATA_PATH, HOSTNAME, LOGS_PATH
 from insectdetect.data import archive_data, save_encoded_frame, upload_data
 from insectdetect.metrics import configure_logger, save_metrics, save_session_info
-from insectdetect.oak import create_pipeline, deletterbox_bbox
+from insectdetect.focus import resolve_lens_pos
+from insectdetect.oak import create_pipeline, deletterbox_bbox, send_camctrl, stop_pipeline
 from insectdetect.postprocess import process_images
 from insectdetect.power import PowerManagerState, init_power_manager
 from insectdetect.led_client import set_led_burst, set_led_off, set_led_on
@@ -283,7 +284,6 @@ def _run_recording(
     result = RecordingResult()
 
     with (
-        ctx.pipeline,
         ThreadPoolExecutor(max_workers=1) as executor,
         open(ctx.metadata_path, "a", buffering=1, encoding="utf-8") as metadata_file
     ):
@@ -305,12 +305,13 @@ def _run_recording(
         # Start optional image post-processing thread
         processing_thread: threading.Thread | None = None
         processing_stop = threading.Event()
+        processing_abort = threading.Event()
         metadata_queue: queue.Queue[tuple[list[dict[str, object]], Future[None]]] | None = None
         if config.processing.crop.enabled or config.processing.overlay.enabled:
             metadata_queue = queue.Queue()
             processing_thread = threading.Thread(
                 target=process_images,
-                args=(metadata_queue, ctx.session_path, config, processing_stop),
+                args=(metadata_queue, ctx.session_path, config, processing_stop, processing_abort),
                 name="ImageProcessor",
                 daemon=False
             )
@@ -341,7 +342,7 @@ def _run_recording(
         # Workaround to avoid focus issues if setAutoFocusRegion() was used in initial camera control
         if config.camera.focus.mode != "manual":
             af_ctrl = dai.CameraControl().setAutoFocusMode(dai.CameraControl.AutoFocusMode.CONTINUOUS_VIDEO)
-            ctx.q_camctrl.send(af_ctrl)
+            send_camctrl(ctx.q_camctrl, af_ctrl)
 
         # Give auto focus/exposure/whitebalance some time to stabilize
         time.sleep(2)
@@ -571,13 +572,13 @@ def _run_recording(
                                         max(10, round((bbox_max[3] - bbox_max[1]) * roi_h))
                                     )
                                     exp_ctrl = dai.CameraControl().setAutoExposureRegion(*rect_bbox)
-                                    ctx.q_camctrl.send(exp_ctrl)
+                                    send_camctrl(ctx.q_camctrl, exp_ctrl)
                                     ae_region_active = True
                                     last_ae_time = ae_time
                             elif ae_region_active:
                                 # Reset AE region to full visible FOV in sensor space if no active tracking ID
                                 exp_ctrl = dai.CameraControl().setAutoExposureRegion(*ctx.sensor_roi)
-                                ctx.q_camctrl.send(exp_ctrl)
+                                send_camctrl(ctx.q_camctrl, exp_ctrl)
                                 ae_region_active = False
                                 last_ae_time = 0.0
 
@@ -595,10 +596,10 @@ def _run_recording(
                                     except Exception:
                                         pass
                                     led_on = True
-                                    led_burst_end = current_time + getattr(config.recording, 'burst_duration', 5)
+                                    led_burst_end = current_time + config.recording.interval.burst_duration
                             elif not detection_burst_active:
                                 detection_burst_active = True
-                                detection_burst_end = current_time + getattr(config.recording, 'burst_duration', 5)
+                                detection_burst_end = current_time + config.recording.interval.burst_duration
                                 next_capture = current_time if current_time >= last_detection_capture + det_interval else last_detection_capture + det_interval
                                 if not led_on:
                                     try:
@@ -606,7 +607,7 @@ def _run_recording(
                                     except Exception:
                                         pass
                                     led_on = True
-                                    led_burst_end = current_time + getattr(config.recording, 'burst_duration', 5)
+                                    led_burst_end = current_time + config.recording.interval.burst_duration
                         else:
                             detection_start_time = None
 
@@ -667,6 +668,10 @@ def _run_recording(
             result.stopped_by_charge = ctx.pwr.enabled and len(chargelevels) >= 3
             _log_recording_end(ctx, result)
 
+        except KeyboardInterrupt:
+            # Skip the graceful post-processing drain on a manual Ctrl+C stop
+            processing_abort.set()
+            raise
         except Exception:
             logger.exception("Error during recording session %s", ctx.session_id)
         finally:
@@ -679,6 +684,9 @@ def _run_recording(
                 metrics_thread.join(timeout=10)
                 if metrics_thread.is_alive():
                     logger.warning("Metrics logger thread did not finish within 10 seconds")
+
+            # Stop OAK pipeline and close device (bounded wait)
+            stop_pipeline(ctx.pipeline)
 
             # Write recording session summary to .csv file
             result.session_end = datetime.now()
@@ -779,11 +787,12 @@ def _archive_and_upload(
         return
 
     try:
-        archive_path = archive_data(DATA_PATH, HOSTNAME, config.storage.archive.disk_low)
-        logger.info("Archiving of data finished")
-        if config.storage.upload.enabled:
-            upload_data(DATA_PATH, archive_path, config.storage.upload.content)
-            logger.info("Uploading of data finished")
+        if archive_data(ctx.session_path, config.storage.archive.disk_low):
+            logger.info("Archiving of data finished")
+            if config.storage.upload.enabled and upload_data(
+                ctx.session_path, config.storage.upload.remote, config.storage.upload.content
+            ):
+                logger.info("Uploading of data finished")
     except Exception:
         logger.exception("Error during archiving/uploading of data")
 
@@ -839,9 +848,12 @@ def main() -> None:
         DATA_PATH, config_active, config
     )
 
-    # Create OAK camera pipeline and output queues
+    # Create OAK camera pipeline and output queues (mono branch for detection, RGB for saving)
+    config.camera.mode = "mono"
     (pipeline, q_frames_by_mode, q_tracks_by_mode, q_syslog, q_camctrl_by_mode,
-     frame_sizes_by_mode, nn_input_size, sensor_rois_by_mode, labels) = create_pipeline(config, stream=False)
+     frame_sizes_by_mode, nn_input_size, sensor_rois_by_mode, labels) = create_pipeline(
+         config, stream=False,
+         lens_pos=resolve_lens_pos() if config.camera.focus.mode == "manual" else None)
 
     # For night: detection on the mono tracker, while high-quality RGB frames are saved on triggers.
     q_frames_rgb = q_frames_by_mode["rgb"]
@@ -885,6 +897,7 @@ def main() -> None:
         try:
             set_led_off()
         except Exception:
+            logger.warning("Could not switch off LED")
         # Optionally shut down Raspberry Pi after recording session
         if not pwr.external_shutdown.is_set() and config.recording.shutdown.enabled:
             subprocess.run(["sudo", "shutdown", "-h", "now"], check=False)

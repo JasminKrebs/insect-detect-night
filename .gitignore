@@ -2,6 +2,7 @@
 models/*.tar.xz
 logs/
 data/
+configs/manual_focus.json*
 configs_backup/
 ssl/
 *.pem
@@ -78,5 +79,8 @@ dmypy.json
 .vscode/
 .cursor/
 
+# Claude
+.claude/
+
 # OS
-.DS_store
+.DS_Store

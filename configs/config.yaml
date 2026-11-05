@@ -12,34 +12,24 @@ camera:
   image:
     resolution: 4k
     quality: 80
-  resolution_mono:
-    width: 544
-    height: 544
   zoom:
     enabled: false
     factor: 1.0
   focus:
     mode: continuous
-    type: lens_pos
-    manual:
-      lens_pos: 156
-      distance: 19
     range:
-      lens_pos:
-        min: 154
-        max: 165
-      distance:
-        min: 15
-        max: 20
+      min: 154
+      max: 165
+    compensation:
+      enabled: true
+      coeff: 0.373
+      sweep: false
   isp:
     sharpness: 1
     luma_denoise: 1
     chroma_denoise: 1
 detection:
   model: platform_insect-detect-tiled_v2-0-0.tar.xz
-  resolution:
-    width: 544
-    height: 544
   num_shaves: 4
   conf_threshold: 0.5
   ae_region:
@@ -71,9 +61,6 @@ processing:
   delete:
     enabled: false
 webapp:
-  resolution_mono:
-    width: 544
-    height: 544
   stream:
     quality: 70
   https:
@@ -81,8 +68,9 @@ webapp:
 network:
   mode: wifi
   hotspot:
-    ssid: night-cam03
-    password: night-cam03
+    fallback: true
+    ssid: null
+    password: null
   wifi:
   - ssid: null
     password: null
@@ -108,17 +96,13 @@ storage:
     disk_low: 5000
   upload:
     enabled: false
+    remote: ''
     content: crops
 startup:
-  hotspot_setup:
-    enabled: true
-  network_setup:
+  wifi_sync:
     enabled: true
   auto_run:
     enabled: false
-    primary: capture
+    primary: capture_day
     fallback: null
     delay: 180
-night:
-  ir_intensity: null
-  led_brightness: null
